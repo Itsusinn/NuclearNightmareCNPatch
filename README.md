@@ -40,9 +40,11 @@ cargo +nightly -Zscript .\nuclear_cn.rs decode --output .\origin.csv
 `decode` 会：
 
 1. 从原始 `NuclearNightmare-Windows.pak` 单独提取英文 `Game.locres`。
-2. 提取主菜单、设置及语言菜单的当前 `.uexp`，修正游戏更新后失效的文本哈希。
-3. 补入新版界面中存在、但旧 `locres` 没有的文本。
-4. 生成带 UTF-8 BOM 的 `origin.csv`，可以直接用 Excel 或文本编辑器打开。
+2. 自动发现并提取游戏的主菜单、建房、服务器列表、服装、背包、地图、任务、结算、技能树、按键设置、聊天、语音设置、载具 HUD 和教程弹窗等 UI `.uexp`，修正游戏更新后失效的文本哈希。
+3. 补入这些当前界面中存在、但旧 `locres` 没有的文本；扫描范围不再依赖少量硬编码资产列表。
+4. 扫描教程地图 Blueprint 中未进入 `Game.locres` 的内嵌文本，以特殊记录一并写入 CSV。
+5. 输出路径已有 CSV 时，按 `namespace/key` 自动保留其中的非空译文。
+6. 生成带 UTF-8 BOM 的 `origin.csv`，可以直接用 Excel 或文本编辑器打开。
 
 不会解包完整的 9 GB 游戏 PAK。
 
@@ -50,7 +52,7 @@ CSV 字段：
 
 | 字段 | 用途 |
 |---|---|
-| `namespace` | Unreal 本地化命名空间 |
+| `namespace` | Unreal 本地化命名空间；`__ASSET_TEXT__` 表示需要直接回写资源的内嵌文本 |
 | `key` | FText 唯一键 |
 | `hash` | 当前源文本的 Unreal CRC32 |
 | `text` | 英文原文；不要修改 |
@@ -74,10 +76,10 @@ NuclearNightmare\Content\Paks\zz_NuclearNightmare_Chinese_P.pak
 `encode` 会：
 
 1. 校验 CSV 键、重复项和 `{...}` 占位符。
-2. 将 CSV 编译为 Unreal `Game.locres`。
+2. 将普通 CSV 记录编译为 Unreal `Game.locres`。
 3. 只覆盖英文语言槽 `en`；俄文及其他语言槽保持游戏原版。
 4. 从原游戏提取 `NotoSansSC-Regular`，生成 11 个中文字体覆盖。
-5. 对教程地图中未进入 `Game.locres` 的 7 段内嵌引导字幕进行等长汉化，保持 Blueprint 字节码偏移不变。
+5. 根据 CSV 中的 `__ASSET_TEXT__` 记录，对教程地图内嵌文本进行等长汉化，保持 Blueprint 字节码偏移不变。
 6. 自动读取并保留原 PAK 的版本、mount point 和 path-hash seed，然后生成最终 PAK。
 7. 在 Rust 进程内回读最终 PAK，校验其元数据及 13 个文件（1 个英文本地化文件、11 个字体覆盖和 1 个教程地图补丁）。
 

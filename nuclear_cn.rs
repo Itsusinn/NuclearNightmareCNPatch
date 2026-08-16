@@ -10,6 +10,7 @@ crc32fast = "1"
 csv = "1"
 encoding_rs = "0.8"
 locres-rs = "=1.0.1"
+md5 = "0.7"
 regex = "1"
 repak = { git = "https://github.com/trumank/repak", rev = "355b5f62f51959c7cc6dd5a51708646ef483065d", features = ["oodle"] }
 serde = { version = "1", features = ["derive"] }
@@ -34,11 +35,7 @@ const EN_LOCRES: &str = "NuclearNightmare/Content/Localization/Game/en/Game.locr
 const FONT_SOURCE: &str =
     "NuclearNightmare/Content/Hyper/ResourcePack/Fonts/NotoSans/NotoSansSC-Regular.ufont";
 const TUTORIAL_MAP: &str = "NuclearNightmare/Content/Maps/TutorialMap.uexp";
-const LIVE_ASSETS: &[&str] = &[
-    "NuclearNightmare/Content/Graphics/MainMenu/MainMenu.uexp",
-    "NuclearNightmare/Content/Graphics/MainMenu/SettingsMenu.uexp",
-    "NuclearNightmare/Content/Graphics/MainMenu/LanguageMenu.uexp",
-];
+const ASSET_TEXT_NAMESPACE: &str = "__ASSET_TEXT__";
 const FONT_TARGETS: &[&str] = &[
     "NuclearNightmare/Content/Fonts/ARIAL.ufont",
     "NuclearNightmare/Content/Fonts/ARIALN.ufont",
@@ -167,9 +164,11 @@ fn decode(args: DecodeArgs) -> Result<()> {
     let workspace = Workspace::new(&args.work_dir, "nuclear-cn-decode-")?;
     let root = workspace.path();
 
-    let mut wanted = Vec::with_capacity(1 + LIVE_ASSETS.len());
-    wanted.push(EN_LOCRES);
-    wanted.extend_from_slice(LIVE_ASSETS);
+    let ui_assets = discover_ui_assets(&pak_path)?;
+    let mut wanted = Vec::with_capacity(2 + ui_assets.len());
+    wanted.push(EN_LOCRES.to_string());
+    wanted.extend(ui_assets.iter().cloned());
+    wanted.push(TUTORIAL_MAP.to_string());
     let extracted = extract_entries(&pak_path, &wanted, root)?;
 
     let locres_path = extracted
@@ -177,13 +176,13 @@ fn decode(args: DecodeArgs) -> Result<()> {
         .context("内部错误：没有提取英文 Game.locres")?;
     let resource = read_locres(locres_path)?;
 
-    let assets: Vec<(String, PathBuf)> = LIVE_ASSETS
+    let assets: Vec<(String, PathBuf)> = ui_assets
         .iter()
         .map(|entry| {
             Ok((
-                (*entry).to_string(),
+                entry.clone(),
                 extracted
-                    .get(*entry)
+                    .get(entry)
                     .with_context(|| format!("内部错误：没有提取 {entry}"))?
                     .clone(),
             ))
@@ -233,6 +232,26 @@ fn decode(args: DecodeArgs) -> Result<()> {
         }
     }
 
+    let tutorial_path = extracted
+        .get(TUTORIAL_MAP)
+        .context("内部错误：没有提取教程地图字节码")?;
+    let tutorial_data = fs::read(tutorial_path)?;
+    let tutorial_strings = scan_blueprint_map_strings(&tutorial_data);
+    let mut occurrences = BTreeMap::<String, usize>::new();
+    for item in &tutorial_strings {
+        let ordinal = occurrences.entry(item.text.clone()).or_default();
+        rows.push(CsvRow {
+            namespace: ASSET_TEXT_NAMESPACE.to_string(),
+            key: asset_text_key(TUTORIAL_MAP, &item.text, *ordinal),
+            hash: unreal_text_crc(&item.text),
+            text: item.text.clone(),
+            trans_text: String::new(),
+            context_asset: TUTORIAL_MAP.to_string(),
+        });
+        *ordinal += 1;
+    }
+
+    let preserved = merge_existing_translations(&mut rows, &args.output)?;
     validate_rows(&rows, false)?;
     write_csv(&args.output, &rows)?;
 
@@ -241,6 +260,8 @@ fn decode(args: DecodeArgs) -> Result<()> {
     println!("LocRes 版本：{:?}", resource.version);
     println!("从当前 UI 资源修正的哈希：{updated_hashes}");
     println!("从当前 UI 资源补入的新记录：{inserted}");
+    println!("从教程地图提取的内嵌文本：{}", tutorial_strings.len());
+    println!("从现有 CSV 保留的译文：{preserved}");
     println!("请填写 trans_text 列，然后运行 encode。");
     Ok(())
 }
@@ -258,21 +279,30 @@ fn encode(args: EncodeArgs) -> Result<()> {
     validate_rows(&rows, args.strict)?;
     let fallback_count = fill_and_validate_translations(&mut rows)?;
 
-    let extracted = extract_entries(&pak_path, &[EN_LOCRES, FONT_SOURCE, TUTORIAL_MAP], root)?;
+    let encode_entries = vec![
+        EN_LOCRES.to_string(),
+        FONT_SOURCE.to_string(),
+        TUTORIAL_MAP.to_string(),
+    ];
+    let extracted = extract_entries(&pak_path, &encode_entries, root)?;
     let source_locres = extracted
         .get(EN_LOCRES)
         .context("内部错误：没有提取英文 Game.locres")?;
     let original = read_locres(source_locres)?;
     let translated = build_locres(original.version, &rows);
+    let locres_row_count = rows
+        .iter()
+        .filter(|row| row.namespace != ASSET_TEXT_NAMESPACE)
+        .count();
     let translated_path = root.join("Game.zh-Hans.locres");
     write_locres(&translated_path, &translated)?;
 
     // 立即回读，防止生成一个结构损坏但尚未装包的 locres。
     let verified = read_locres(&translated_path)?;
-    if verified.entry_count() != rows.len() {
+    if verified.entry_count() != locres_row_count {
         bail!(
             "LocRes 回读校验失败：预期 {} 条，实际 {} 条",
-            rows.len(),
+            locres_row_count,
             verified.entry_count()
         );
     }
@@ -297,7 +327,7 @@ fn encode(args: EncodeArgs) -> Result<()> {
         .get(TUTORIAL_MAP)
         .context("内部错误：没有提取教程地图字节码")?;
     let tutorial_target = build.join(TUTORIAL_MAP);
-    patch_tutorial_subtitles(tutorial_source, &tutorial_target)?;
+    let tutorial_patch_count = patch_tutorial_subtitles(tutorial_source, &tutorial_target, &rows)?;
 
     let metadata = read_pak_metadata(&pak_path)?;
     let staged_pak = root.join("Chinese_P.pak");
@@ -328,7 +358,7 @@ fn encode(args: EncodeArgs) -> Result<()> {
         "仅覆盖 English（en）语言槽，并包含 {} 个中文字体覆盖。",
         FONT_TARGETS.len()
     );
-    println!("已对教程地图中的 7 段内嵌引导字幕进行等长汉化。");
+    println!("已从 CSV 对教程地图中的 {tutorial_patch_count} 段内嵌文本进行等长汉化。");
     Ok(())
 }
 
@@ -352,9 +382,42 @@ fn read_pak_metadata(path: &Path) -> Result<PakMetadata> {
     })
 }
 
+fn discover_ui_assets(pak_path: &Path) -> Result<Vec<String>> {
+    let file = File::open(pak_path)?;
+    let mut reader = BufReader::new(file);
+    let pak = repak::PakBuilder::new()
+        .reader(&mut reader)
+        .with_context(|| format!("无法打开 PAK：{}", pak_path.display()))?;
+    let mut assets: Vec<String> = pak
+        .files()
+        .into_iter()
+        .filter(|entry| is_ui_asset(entry))
+        .collect();
+    assets.sort();
+    if assets.is_empty() {
+        bail!("未在游戏 PAK 中发现可扫描的 UI 资源");
+    }
+    Ok(assets)
+}
+
+fn is_ui_asset(entry: &str) -> bool {
+    if !entry.starts_with("NuclearNightmare/Content/") || !entry.ends_with(".uexp") {
+        return false;
+    }
+    let lowered = entry.to_ascii_lowercase();
+    let ui_area = lowered.contains("/graphics/")
+        || lowered.contains("/antizevoipsystem/widgets/")
+        || lowered.contains("/snowmobile/widgets/")
+        || lowered.contains("/dv_snowmobile/ui/")
+        || lowered.contains("/nicecolorwheel/widgets/")
+        || lowered.contains("/hextree/widgets/")
+        || lowered.contains("/firstperson/input/actions/");
+    ui_area && !lowered.contains("/texture") && !lowered.contains("/materials/")
+}
+
 fn extract_entries(
     pak_path: &Path,
-    entries: &[&str],
+    entries: &[String],
     output_dir: &Path,
 ) -> Result<BTreeMap<String, PathBuf>> {
     let file = File::open(pak_path)?;
@@ -375,7 +438,7 @@ fn extract_entries(
         pak.read_file(entry, &mut reader, &mut writer)
             .with_context(|| format!("无法从 PAK 提取 {entry}"))?;
         writer.flush()?;
-        outputs.insert((*entry).to_string(), output);
+        outputs.insert(entry.clone(), output);
     }
     Ok(outputs)
 }
@@ -482,7 +545,10 @@ fn write_locres(path: &Path, resource: &Locres) -> Result<()> {
 
 fn build_locres(version: locres::LocresVer, rows: &[CsvRow]) -> Locres {
     let mut grouped: BTreeMap<String, Vec<&CsvRow>> = BTreeMap::new();
-    for row in rows {
+    for row in rows
+        .iter()
+        .filter(|row| row.namespace != ASSET_TEXT_NAMESPACE)
+    {
         grouped.entry(row.namespace.clone()).or_default().push(row);
     }
     let mut output = Locres::new(version);
@@ -512,6 +578,27 @@ fn read_csv(path: &Path) -> Result<Vec<CsvRow>> {
             record.with_context(|| format!("CSV 第 {} 条数据格式错误", index + 2))
         })
         .collect()
+}
+
+fn merge_existing_translations(rows: &mut [CsvRow], path: &Path) -> Result<usize> {
+    if !path.is_file() {
+        return Ok(0);
+    }
+    let existing = read_csv(path)?;
+    let translations: BTreeMap<(String, String), String> = existing
+        .into_iter()
+        .map(|row| ((row.namespace, row.key), row.trans_text))
+        .collect();
+    let mut preserved = 0usize;
+    for row in rows {
+        if let Some(translation) = translations.get(&(row.namespace.clone(), row.key.clone())) {
+            if !translation.trim().is_empty() {
+                row.trans_text = translation.clone();
+                preserved += 1;
+            }
+        }
+    }
+    Ok(preserved)
 }
 
 fn write_csv(path: &Path, rows: &[CsvRow]) -> Result<()> {
@@ -638,6 +725,13 @@ fn validate_rows(rows: &[CsvRow], strict: bool) -> Result<()> {
         if row.text.is_empty() {
             bail!("第 {} 条记录的 text 为空", index + 2);
         }
+        if row.namespace == ASSET_TEXT_NAMESPACE && row.context_asset != TUTORIAL_MAP {
+            bail!(
+                "第 {} 条资源内嵌文本指向不受支持的资产：{}",
+                index + 2,
+                row.context_asset
+            );
+        }
         if !seen.insert((row.namespace.clone(), row.key.clone())) {
             bail!("第 {} 条记录的 namespace/key 重复", index + 2);
         }
@@ -660,44 +754,132 @@ fn copy_to(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-fn patch_tutorial_subtitles(source: &Path, target: &Path) -> Result<()> {
-    const UNICODE_PATCHES: &[(&str, &str)] = &[
-        (
-            "Pick up the gas canister and fuel up the snowmobile by holding LMB. Then E to drive the snowmobile.",
-            "拿起油桶，按住鼠标左键给雪地摩托加油，然后按 E 驾驶雪地摩托。",
-        ),
-        (
-            "To call an extraction, you must also connect to the satellite. Locate one/multiple of these levers in the environment and switch it on to establish the link.",
-            "要呼叫撤离，还必须连接卫星。找到环境中的一个或多个此类控制杆并将其开启，以建立连接。",
-        ),
-        (
-            "The map also shows your objectives on the left, including the locations of classified materials. Since this is the tutorial, that section is currently empty.",
-            "地图左侧还会显示你的目标，包括机密材料的位置。由于这是教程，该区域目前为空。",
-        ),
-        (
-            "Open the map (M) and add a waypoint to the \"End\" by clicking the flag icon. Once this is complete fly to the marked location.",
-            "打开地图（M），点击旗帜图标，在“终点”处设置路径点。完成后，飞往标记位置。",
-        ),
-        (
-            "Open the map (M) and add a waypoint to the \"Helicopter Location\" by clicking the flag icon. Once this is complete drive to the marked location.",
-            "打开地图（M），点击旗帜图标，在“直升机位置”处设置路径点。完成后，驾车前往标记位置。",
-        ),
-        (
-            "The snowmobile is out of fuel you need to fuel it up in order to drive.",
-            "雪地摩托没油了，必须先加油才能驾驶。",
-        ),
-    ];
-    const ANSI_PATCH: (&str, &str) = (
-        "Generators also power evacuation computers. Once at least 4 classified materials have been collected, you can use an evacuation computer to call for extraction and win the game or revive dead players.",
-        "发电机也会为撤离电脑供电。收集至少 4 份机密材料后，你可以使用撤离电脑呼叫撤离并赢得游戏，或复活已死亡的玩家。",
-    );
+#[derive(Clone, Copy)]
+enum BlueprintStringEncoding {
+    Ansi,
+    Unicode,
+}
 
+struct BlueprintMapString {
+    start: usize,
+    text: String,
+    encoding: BlueprintStringEncoding,
+}
+
+fn is_user_facing_map_text(text: &str) -> bool {
+    let character_count = text.chars().count();
+    let ascii_letters = text
+        .bytes()
+        .filter(|byte| byte.is_ascii_alphabetic())
+        .count();
+    character_count >= 20
+        && text.split_whitespace().count() >= 4
+        && ascii_letters >= 10
+        && ascii_letters * 2 >= character_count
+}
+
+fn scan_blueprint_map_strings(data: &[u8]) -> Vec<BlueprintMapString> {
+    let mut output = Vec::new();
+    let mut opcode = 0usize;
+    while opcode + 2 < data.len() {
+        match data[opcode] {
+            0x1f => {
+                let start = opcode + 1;
+                let mut end = start;
+                while end < data.len() && end - start <= 4096 {
+                    let byte = data[end];
+                    if byte == 0 {
+                        break;
+                    }
+                    if !matches!(byte, b'\t' | b'\n' | b'\r' | 0x20..=0x7e) {
+                        break;
+                    }
+                    end += 1;
+                }
+                if end < data.len() && data[end] == 0 {
+                    if let Ok(text) = std::str::from_utf8(&data[start..end]) {
+                        if is_user_facing_map_text(text) {
+                            output.push(BlueprintMapString {
+                                start,
+                                text: text.to_string(),
+                                encoding: BlueprintStringEncoding::Ansi,
+                            });
+                            opcode = end + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            0x34 => {
+                let start = opcode + 1;
+                let mut end = start;
+                while end + 1 < data.len() && end - start <= 8192 {
+                    if data[end] == 0 && data[end + 1] == 0 {
+                        break;
+                    }
+                    end += 2;
+                }
+                if end + 1 < data.len() && data[end] == 0 && data[end + 1] == 0 {
+                    let units: Vec<u16> = data[start..end]
+                        .chunks_exact(2)
+                        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                        .collect();
+                    if let Ok(text) = String::from_utf16(&units) {
+                        if is_user_facing_map_text(&text) {
+                            output.push(BlueprintMapString {
+                                start,
+                                text,
+                                encoding: BlueprintStringEncoding::Unicode,
+                            });
+                            opcode = end + 2;
+                            continue;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        opcode += 1;
+    }
+    output
+}
+
+fn asset_text_key(asset: &str, text: &str, ordinal: usize) -> String {
+    format!("{:X}", md5::compute(format!("{asset}\0{text}\0{ordinal}")))
+}
+
+fn patch_tutorial_subtitles(source: &Path, target: &Path, rows: &[CsvRow]) -> Result<usize> {
     let mut data = fs::read(source)?;
     let original_len = data.len();
-    for (english, chinese) in UNICODE_PATCHES {
-        replace_blueprint_string_unicode(&mut data, english, chinese)?;
+    let strings = scan_blueprint_map_strings(&data);
+    let mut occurrences = BTreeMap::<String, usize>::new();
+    let map_rows: BTreeMap<&str, &CsvRow> = rows
+        .iter()
+        .filter(|row| row.namespace == ASSET_TEXT_NAMESPACE && row.context_asset == TUTORIAL_MAP)
+        .map(|row| (row.key.as_str(), row))
+        .collect();
+    if map_rows.len() != strings.len() {
+        bail!(
+            "教程地图 CSV 记录数不匹配：CSV {} 条，资源 {} 条；请重新运行 decode",
+            map_rows.len(),
+            strings.len()
+        );
     }
-    replace_blueprint_string_gbk(&mut data, ANSI_PATCH.0, ANSI_PATCH.1)?;
+    for item in &strings {
+        let ordinal = occurrences.entry(item.text.clone()).or_default();
+        let key = asset_text_key(TUTORIAL_MAP, &item.text, *ordinal);
+        *ordinal += 1;
+        let row = map_rows
+            .get(key.as_str())
+            .with_context(|| format!("教程地图 CSV 缺少文本：{}", item.text))?;
+        if row.text != item.text || row.hash != unreal_text_crc(&item.text) {
+            bail!(
+                "教程地图 CSV 原文或哈希已失效：{}；请重新运行 decode",
+                item.text
+            );
+        }
+        replace_blueprint_string(&mut data, item, &row.trans_text)?;
+    }
     if data.len() != original_len {
         bail!("教程地图等长替换校验失败");
     }
@@ -705,23 +887,59 @@ fn patch_tutorial_subtitles(source: &Path, target: &Path) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     fs::write(target, data)
-        .with_context(|| format!("无法写入教程字幕补丁 {}", target.display()))?;
-    Ok(())
+        .with_context(|| format!("无法写入教程地图文本补丁 {}", target.display()))?;
+    Ok(strings.len())
 }
 
-fn replace_blueprint_string_unicode(data: &mut [u8], english: &str, chinese: &str) -> Result<()> {
-    let start = find_unique_bytes(data, english.as_bytes())?;
-    if start == 0 || data[start - 1] != 0x1f || data.get(start + english.len()) != Some(&0) {
-        bail!("教程字幕不是预期的 Blueprint ANSI 字符串：{english}");
+fn replace_blueprint_string(
+    data: &mut [u8],
+    item: &BlueprintMapString,
+    chinese: &str,
+) -> Result<()> {
+    let start = item.start;
+    let english = &item.text;
+    if start == 0 {
+        bail!("教程地图文本偏移无效：{english}");
     }
-    let slot_len = english.len() + 1;
-    if slot_len % 2 != 0 {
-        bail!("教程字幕槽长度不是偶数，无法进行等长 Unicode 替换：{english}");
+    let slot_len = match item.encoding {
+        BlueprintStringEncoding::Ansi => {
+            if data[start - 1] != 0x1f
+                || data.get(start..start + english.len()) != Some(english.as_bytes())
+                || data.get(start + english.len()) != Some(&0)
+            {
+                bail!("教程地图文本不是预期的 Blueprint ANSI 字符串：{english}");
+            }
+            english.len() + 1
+        }
+        BlueprintStringEncoding::Unicode => {
+            let original: Vec<u8> = english
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .flat_map(u16::to_le_bytes)
+                .collect();
+            if data[start - 1] != 0x34
+                || data.get(start..start + original.len()) != Some(original.as_slice())
+            {
+                bail!("教程地图文本不是预期的 Blueprint Unicode 字符串：{english}");
+            }
+            original.len()
+        }
+    };
+    if matches!(item.encoding, BlueprintStringEncoding::Ansi) && slot_len % 2 != 0 {
+        let (encoded, _, had_errors) = GBK.encode(chinese);
+        if had_errors || encoded.len() + 1 > slot_len {
+            bail!("教程地图译文无法等长编码为 GBK：{chinese}");
+        }
+        let slot = &mut data[start..start + slot_len];
+        slot.fill(b' ');
+        slot[..encoded.len()].copy_from_slice(&encoded);
+        slot[slot_len - 1] = 0;
+        return Ok(());
     }
     let slot_units = slot_len / 2;
     let translated: Vec<u16> = chinese.encode_utf16().collect();
     if translated.len() + 1 > slot_units {
-        bail!("教程字幕译文过长：{chinese}");
+        bail!("教程地图译文过长，无法保持字节码偏移：{chinese}");
     }
     let mut bytes = Vec::with_capacity(slot_len);
     for unit in translated
@@ -732,38 +950,9 @@ fn replace_blueprint_string_unicode(data: &mut [u8], english: &str, chinese: &st
     {
         bytes.extend_from_slice(&unit.to_le_bytes());
     }
-    data[start - 1] = 0x34; // EX_UnicodeStringConst
+    data[start - 1] = 0x34; // EX_UnicodeStringConst（ANSI 偶数字节槽会转换为 Unicode）
     data[start..start + slot_len].copy_from_slice(&bytes);
     Ok(())
-}
-
-fn replace_blueprint_string_gbk(data: &mut [u8], english: &str, chinese: &str) -> Result<()> {
-    let start = find_unique_bytes(data, english.as_bytes())?;
-    if start == 0 || data[start - 1] != 0x1f || data.get(start + english.len()) != Some(&0) {
-        bail!("教程字幕不是预期的 Blueprint ANSI 字符串：{english}");
-    }
-    let (encoded, _, had_errors) = GBK.encode(chinese);
-    if had_errors || encoded.len() > english.len() {
-        bail!("教程字幕无法等长编码为 GBK：{chinese}");
-    }
-    let slot = &mut data[start..=start + english.len()];
-    slot.fill(b' ');
-    slot[..encoded.len()].copy_from_slice(&encoded);
-    slot[english.len()] = 0;
-    Ok(())
-}
-
-fn find_unique_bytes(data: &[u8], needle: &[u8]) -> Result<usize> {
-    let mut matches = data.windows(needle.len()).enumerate().filter_map(|(index, item)| {
-        (item == needle).then_some(index)
-    });
-    let first = matches.next().with_context(|| {
-        format!("在教程地图中找不到待替换文本：{}", String::from_utf8_lossy(needle))
-    })?;
-    if matches.next().is_some() {
-        bail!("教程地图中的待替换文本不唯一：{}", String::from_utf8_lossy(needle));
-    }
-    Ok(first)
 }
 
 fn resolve_game_dir(path: &Path) -> Result<PathBuf> {
