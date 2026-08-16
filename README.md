@@ -77,8 +77,9 @@ NuclearNightmare\Content\Paks\zz_NuclearNightmare_Chinese_P.pak
 2. 将 CSV 编译为 Unreal `Game.locres`。
 3. 只覆盖英文语言槽 `en`；俄文及其他语言槽保持游戏原版。
 4. 从原游戏提取 `NotoSansSC-Regular`，生成 11 个中文字体覆盖。
-5. 自动读取并保留原 PAK 的版本、mount point 和 path-hash seed，然后生成最终 PAK。
-6. 在 Rust 进程内回读最终 PAK，校验其元数据及 12 个文件（1 个英文本地化文件和 11 个字体覆盖）。
+5. 对教程地图中未进入 `Game.locres` 的 7 段内嵌引导字幕进行等长汉化，保持 Blueprint 字节码偏移不变。
+6. 自动读取并保留原 PAK 的版本、mount point 和 path-hash seed，然后生成最终 PAK。
+7. 在 Rust 进程内回读最终 PAK，校验其元数据及 13 个文件（1 个英文本地化文件、11 个字体覆盖和 1 个教程地图补丁）。
 
 `--strict` 会在任何 `trans_text` 留空时停止。省略该参数时，空白译文会自动回退到英文原文。
 

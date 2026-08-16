@@ -8,6 +8,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 crc32fast = "1"
 csv = "1"
+encoding_rs = "0.8"
 locres-rs = "=1.0.1"
 regex = "1"
 repak = { git = "https://github.com/trumank/repak", rev = "355b5f62f51959c7cc6dd5a51708646ef483065d", features = ["oodle"] }
@@ -18,6 +19,7 @@ tempfile = "3"
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use crc32fast::Hasher;
+use encoding_rs::GBK;
 use locres_rs::locres::{self, Locres, LocresEntry, LocresNamespace};
 use regex::{bytes::Regex as BytesRegex, Regex};
 use serde::{Deserialize, Serialize};
@@ -31,6 +33,7 @@ const ORIGINAL_PAK: &str = "NuclearNightmare/Content/Paks/NuclearNightmare-Windo
 const EN_LOCRES: &str = "NuclearNightmare/Content/Localization/Game/en/Game.locres";
 const FONT_SOURCE: &str =
     "NuclearNightmare/Content/Hyper/ResourcePack/Fonts/NotoSans/NotoSansSC-Regular.ufont";
+const TUTORIAL_MAP: &str = "NuclearNightmare/Content/Maps/TutorialMap.uexp";
 const LIVE_ASSETS: &[&str] = &[
     "NuclearNightmare/Content/Graphics/MainMenu/MainMenu.uexp",
     "NuclearNightmare/Content/Graphics/MainMenu/SettingsMenu.uexp",
@@ -255,7 +258,7 @@ fn encode(args: EncodeArgs) -> Result<()> {
     validate_rows(&rows, args.strict)?;
     let fallback_count = fill_and_validate_translations(&mut rows)?;
 
-    let extracted = extract_entries(&pak_path, &[EN_LOCRES, FONT_SOURCE], root)?;
+    let extracted = extract_entries(&pak_path, &[EN_LOCRES, FONT_SOURCE, TUTORIAL_MAP], root)?;
     let source_locres = extracted
         .get(EN_LOCRES)
         .context("内部错误：没有提取英文 Game.locres")?;
@@ -290,6 +293,12 @@ fn encode(args: EncodeArgs) -> Result<()> {
         copy_to(noto, &build.join(target))?;
     }
 
+    let tutorial_source = extracted
+        .get(TUTORIAL_MAP)
+        .context("内部错误：没有提取教程地图字节码")?;
+    let tutorial_target = build.join(TUTORIAL_MAP);
+    patch_tutorial_subtitles(tutorial_source, &tutorial_target)?;
+
     let metadata = read_pak_metadata(&pak_path)?;
     let staged_pak = root.join("Chinese_P.pak");
     let expected_entries = collect_build_entries(&build)?;
@@ -319,6 +328,7 @@ fn encode(args: EncodeArgs) -> Result<()> {
         "仅覆盖 English（en）语言槽，并包含 {} 个中文字体覆盖。",
         FONT_TARGETS.len()
     );
+    println!("已对教程地图中的 7 段内嵌引导字幕进行等长汉化。");
     Ok(())
 }
 
@@ -648,6 +658,112 @@ fn copy_to(source: &Path, target: &Path) -> Result<()> {
     fs::copy(source, target)
         .with_context(|| format!("无法复制 {} -> {}", source.display(), target.display()))?;
     Ok(())
+}
+
+fn patch_tutorial_subtitles(source: &Path, target: &Path) -> Result<()> {
+    const UNICODE_PATCHES: &[(&str, &str)] = &[
+        (
+            "Pick up the gas canister and fuel up the snowmobile by holding LMB. Then E to drive the snowmobile.",
+            "拿起油桶，按住鼠标左键给雪地摩托加油，然后按 E 驾驶雪地摩托。",
+        ),
+        (
+            "To call an extraction, you must also connect to the satellite. Locate one/multiple of these levers in the environment and switch it on to establish the link.",
+            "要呼叫撤离，还必须连接卫星。找到环境中的一个或多个此类控制杆并将其开启，以建立连接。",
+        ),
+        (
+            "The map also shows your objectives on the left, including the locations of classified materials. Since this is the tutorial, that section is currently empty.",
+            "地图左侧还会显示你的目标，包括机密材料的位置。由于这是教程，该区域目前为空。",
+        ),
+        (
+            "Open the map (M) and add a waypoint to the \"End\" by clicking the flag icon. Once this is complete fly to the marked location.",
+            "打开地图（M），点击旗帜图标，在“终点”处设置路径点。完成后，飞往标记位置。",
+        ),
+        (
+            "Open the map (M) and add a waypoint to the \"Helicopter Location\" by clicking the flag icon. Once this is complete drive to the marked location.",
+            "打开地图（M），点击旗帜图标，在“直升机位置”处设置路径点。完成后，驾车前往标记位置。",
+        ),
+        (
+            "The snowmobile is out of fuel you need to fuel it up in order to drive.",
+            "雪地摩托没油了，必须先加油才能驾驶。",
+        ),
+    ];
+    const ANSI_PATCH: (&str, &str) = (
+        "Generators also power evacuation computers. Once at least 4 classified materials have been collected, you can use an evacuation computer to call for extraction and win the game or revive dead players.",
+        "发电机也会为撤离电脑供电。收集至少 4 份机密材料后，你可以使用撤离电脑呼叫撤离并赢得游戏，或复活已死亡的玩家。",
+    );
+
+    let mut data = fs::read(source)?;
+    let original_len = data.len();
+    for (english, chinese) in UNICODE_PATCHES {
+        replace_blueprint_string_unicode(&mut data, english, chinese)?;
+    }
+    replace_blueprint_string_gbk(&mut data, ANSI_PATCH.0, ANSI_PATCH.1)?;
+    if data.len() != original_len {
+        bail!("教程地图等长替换校验失败");
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(target, data)
+        .with_context(|| format!("无法写入教程字幕补丁 {}", target.display()))?;
+    Ok(())
+}
+
+fn replace_blueprint_string_unicode(data: &mut [u8], english: &str, chinese: &str) -> Result<()> {
+    let start = find_unique_bytes(data, english.as_bytes())?;
+    if start == 0 || data[start - 1] != 0x1f || data.get(start + english.len()) != Some(&0) {
+        bail!("教程字幕不是预期的 Blueprint ANSI 字符串：{english}");
+    }
+    let slot_len = english.len() + 1;
+    if slot_len % 2 != 0 {
+        bail!("教程字幕槽长度不是偶数，无法进行等长 Unicode 替换：{english}");
+    }
+    let slot_units = slot_len / 2;
+    let translated: Vec<u16> = chinese.encode_utf16().collect();
+    if translated.len() + 1 > slot_units {
+        bail!("教程字幕译文过长：{chinese}");
+    }
+    let mut bytes = Vec::with_capacity(slot_len);
+    for unit in translated
+        .into_iter()
+        .chain(std::iter::repeat_n(' ' as u16, slot_units - 1))
+        .take(slot_units - 1)
+        .chain(std::iter::once(0))
+    {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    data[start - 1] = 0x34; // EX_UnicodeStringConst
+    data[start..start + slot_len].copy_from_slice(&bytes);
+    Ok(())
+}
+
+fn replace_blueprint_string_gbk(data: &mut [u8], english: &str, chinese: &str) -> Result<()> {
+    let start = find_unique_bytes(data, english.as_bytes())?;
+    if start == 0 || data[start - 1] != 0x1f || data.get(start + english.len()) != Some(&0) {
+        bail!("教程字幕不是预期的 Blueprint ANSI 字符串：{english}");
+    }
+    let (encoded, _, had_errors) = GBK.encode(chinese);
+    if had_errors || encoded.len() > english.len() {
+        bail!("教程字幕无法等长编码为 GBK：{chinese}");
+    }
+    let slot = &mut data[start..=start + english.len()];
+    slot.fill(b' ');
+    slot[..encoded.len()].copy_from_slice(&encoded);
+    slot[english.len()] = 0;
+    Ok(())
+}
+
+fn find_unique_bytes(data: &[u8], needle: &[u8]) -> Result<usize> {
+    let mut matches = data.windows(needle.len()).enumerate().filter_map(|(index, item)| {
+        (item == needle).then_some(index)
+    });
+    let first = matches.next().with_context(|| {
+        format!("在教程地图中找不到待替换文本：{}", String::from_utf8_lossy(needle))
+    })?;
+    if matches.next().is_some() {
+        bail!("教程地图中的待替换文本不唯一：{}", String::from_utf8_lossy(needle));
+    }
+    Ok(first)
 }
 
 fn resolve_game_dir(path: &Path) -> Result<PathBuf> {
