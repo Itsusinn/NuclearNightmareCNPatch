@@ -1,0 +1,31 @@
+Sarasa Gothic SC - Common Chinese Subset
+
+Original project: https://github.com/be5invis/Sarasa-Gothic
+Original font: SarasaGothicSC-Regular.ttf, Version 1.0.42
+Original SHA-256: 1202162d0369c25f4dd571582ffc4c8a8c42bf18db469d4580da9b41b6cb64a1
+
+Copyright (c) 2015-2025, Renzhi Li (aka. Belleve Invis, belleve@typeof.net).
+Portions Copyright (c) 2016 The Inter Project Authors.
+Portions Copyright (c) 2014-2021 Adobe Systems Incorporated (http://www.adobe.com/), with Reserved Font Name 'Source'.
+Portions Copyright (c) 2012 Google Inc.
+
+This modified font is licensed under the SIL Open Font License, Version 1.1.
+See OFL.txt for the complete license. The project's AGPL license does not
+replace the font's OFL license.
+
+Subset file: NNChinese-GB2312-Regular.ttf (4,089,404 bytes)
+Subset SHA-256: c87701fa99cfad1a104949a9093c5c9e018de809ca0eebe2d0d50101b8cead66
+Modified family name: NN Chinese Common Subset
+Generated using fontTools 4.67.0; hinting and relevant layout features retained.
+
+Character selection: characters present in the original font from GB2312,
+the English text and Chinese translations of the 1,264-row translations.csv
+at commit 43f4ad048486aea464154b7fce6c6920aa452099, and Unicode ranges
+U+0020-052F, U+2000-206F, U+2190-22FF, U+25A0-25FF, U+3000-303F, U+FF00-FFEF.
+The subset has 8,763 Unicode mappings and 9,739 glyphs.
+Rare characters and arbitrary player names/chat are not guaranteed to render.
+New translations may require regenerating the subset.
+
+The patch embeds this subset unchanged into 11 game font override paths.
+Only the Unreal .ufont container is added; the original Noto font payload
+is not included in these overrides.
