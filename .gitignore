@@ -21,3 +21,7 @@ target
 #.idea/
 oo2core_9_win64.dll
 origin.csv
+
+# Local patch packages and distribution output
+*.pak
+/dist/

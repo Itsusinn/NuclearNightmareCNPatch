@@ -8,9 +8,9 @@ PAK 读写使用固定提交的 [`trumank/repak`](https://github.com/trumank/rep
 
 ## 仓库大文件与字体复现
 
-字体（`*.ttf`）和补丁（`*.pak`）由 Git LFS 管理。克隆后先执行 `git lfs install`、`git lfs pull`，再编译；否则 `include_bytes!` 会读到 LFS 指针而非字体。原始字体 `SarasaGothicSC-Regular.ttf` 和 `fonts/` 下的子集均适用 `fonts/OFL.txt` 中的许可。
+字体（`*.ttf`）由 Git LFS 管理。克隆后先执行 `git lfs install`、`git lfs pull`，再编译；否则 `include_bytes!` 会读到 LFS 指针而非字体。原始字体 `SarasaGothicSC-Regular.ttf` 和 `fonts/` 下的子集均适用 `fonts/OFL.txt` 中的许可。
 
-`dist/zz_NuclearNightmare_Chinese_P.pak` 是当前已验证的安装包，校验值和验证范围见 `dist/README.md`。更新此文件时须重新严格打包并进游戏验证，同时更新校验值。`target/` 中的中间资源、旧包和缓存，以及 `origin.csv`、Oodle 运行库不提交。
+PAK 文件与 `dist/` 分发目录仅保留在本地，不纳入 Git 或 Git LFS。发布补丁时须重新严格打包并进游戏验证。`target/` 中的中间资源、旧包和缓存，以及 `origin.csv`、Oodle 运行库不提交。
 
 字体精简脚本使用 Python 及固定版本的 fontTools/Pillow，仅在重新生成子集时需要。安装 uv 后运行：
 

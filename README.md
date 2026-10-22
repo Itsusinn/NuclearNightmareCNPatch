@@ -4,7 +4,7 @@
 
 ## 补丁安装
 
-当前补丁位于 [dist/zz_NuclearNightmare_Chinese_P.pak](./dist/zz_NuclearNightmare_Chinese_P.pak)，由 Git LFS 存储；克隆仓库后运行 `git lfs install` 和 `git lfs pull` 下载实际文件。网页下载请使用文件页面的下载按钮。
+仓库不跟踪 PAK 文件。补丁可从 [Releases](https://github.com/Itsusinn/NuclearNightmareCNPatch/releases) 下载，或按 [AGENTS.md](./AGENTS.md) 在本地生成。
 
 1. 退出游戏，将 `zz_NuclearNightmare_Chinese_P.pak` 放入游戏安装目录下的 `NuclearNightmare\Content\Paks\` 文件夹；更新补丁时替换同名文件。
 2. 启动游戏，在“选项 → 显示 → 语言”中选择 `English`。
