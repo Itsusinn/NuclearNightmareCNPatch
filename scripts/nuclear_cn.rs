@@ -34,9 +34,9 @@ const ORIGINAL_PAK: &str = "NuclearNightmare/Content/Paks/NuclearNightmare-Windo
 const EN_LOCRES: &str = "NuclearNightmare/Content/Localization/Game/en/Game.locres";
 const FONT_TEMPLATE: &str =
     "NuclearNightmare/Content/Hyper/ResourcePack/Fonts/NotoSans/NotoSansSC-Regular.ufont";
-const SARASA_FONT: &[u8] = include_bytes!("fonts/NNChinese-GB2312-Regular.ttf");
-const SARASA_LICENSE: &[u8] = include_bytes!("fonts/OFL.txt");
-const SARASA_NOTICE: &[u8] = include_bytes!("fonts/NOTICE.txt");
+const SARASA_FONT: &[u8] = include_bytes!("../fonts/NNChinese-GB2312-Regular.ttf");
+const SARASA_LICENSE: &[u8] = include_bytes!("../fonts/OFL.txt");
+const SARASA_NOTICE: &[u8] = include_bytes!("../fonts/NOTICE.txt");
 const TUTORIAL_MAP: &str = "NuclearNightmare/Content/Maps/TutorialMap.uexp";
 const ASSET_TEXT_NAMESPACE: &str = "__ASSET_TEXT__";
 const FONT_TARGETS: &[&str] = &[
@@ -259,7 +259,7 @@ fn decode(args: DecodeArgs) -> Result<()> {
     }
 
     let bundled: Vec<CsvRow> =
-        csv::Reader::from_reader(include_bytes!("translations.csv").as_slice())
+        csv::Reader::from_reader(include_bytes!("../translations.csv").as_slice())
             .deserialize()
             .collect::<std::result::Result<_, _>>()?;
     let seeded = merge_translations(&mut rows, bundled);

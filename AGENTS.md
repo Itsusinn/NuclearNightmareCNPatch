@@ -1,6 +1,6 @@
 # Nuclear Nightmare 汉化 CLI
 
-脚本文件：[nuclear_cn.rs](./nuclear_cn.rs)
+脚本文件：[scripts/nuclear_cn.rs](./scripts/nuclear_cn.rs)
 
 这是一个纯 Rust 单文件 Cargo CLI，提供 `decode` 和 `encode` 两个子命令。当前电脑已经安装 Rust nightly，因此直接使用 Cargo 官方单文件脚本功能即可，无需安装第三方 `cargo-script`、`repak.exe`、.NET 或 LocResUtility。
 
@@ -8,17 +8,23 @@ PAK 读写使用固定提交的 [`trumank/repak`](https://github.com/trumank/rep
 
 ## 仓库大文件与字体复现
 
-字体（`*.ttf`）由 Git LFS 管理。克隆后先执行 `git lfs install`、`git lfs pull`，再编译；否则 `include_bytes!` 会读到 LFS 指针而非字体。原始字体 `SarasaGothicSC-Regular.ttf` 和 `fonts/` 下的子集均适用 `fonts/OFL.txt` 中的许可。
+字体（`*.ttf`）由 Git LFS 管理。克隆后先执行 `git lfs install`、`git lfs pull`，再编译；否则 `include_bytes!` 会读到 LFS 指针而非字体。原始字体 `fonts/SarasaGothicSC-Regular.ttf` 和同目录下的子集均适用 `fonts/OFL.txt` 中的许可。
 
 PAK 文件与 `dist/` 分发目录仅保留在本地，不纳入 Git 或 Git LFS。发布补丁时须重新严格打包并进游戏验证。`target/` 中的中间资源、旧包和缓存，以及 `origin.csv`、Oodle 运行库不提交。
 
-字体精简脚本使用 Python 及固定版本的 fontTools/Pillow，仅在重新生成子集时需要。安装 uv 后运行：
+字体精简脚本 `scripts/subset_font.rs` 使用纯 Rust 的 Skera 0.9.0、fontdue 0.9.5，无需 Python、uv、fontTools 或 Pillow。通过 Cargo nightly 单文件脚本运行：
 
 ```powershell
-uv run scripts/subset_font.py
+cargo +nightly -Zscript scripts/subset_font.rs
+# 或
+just subset-font
 ```
 
-默认读取仓库原始字体和 `translations.csv`，在 `target/font-subsets/` 生成常用中文/UI 两种子集、字符覆盖与哈希报告、字形对照图；不直接覆盖正式字体。可用 `--source`、`--translations`、`--output-dir` 指定路径。验证通过后将常用中文版复制到 `fonts/NNChinese-GB2312-Regular.ttf`，同步 `fonts/NOTICE.txt` 的大小、哈希和字符信息，并重新构建 PAK。
+默认读取 `fonts/SarasaGothicSC-Regular.ttf` 和 `translations.csv`，在 `target/font-subsets/` 生成常用中文/UI 两种子集、字符覆盖与哈希报告 `report.json`、字形对照图 `comparison.png`；默认路径相对于脚本所在项目，与运行目录无关。可用 `--source`、`--translations`、`--output-dir` 指定路径。脚本仅支持静态 TrueType 字体，检查字符覆盖、全部保留字形的轮廓和 hinting 指令、水平字宽、全局 hinting 表、字体校验和，以及样本文字在 16/24/40 像素下的无 hinting 栅格化一致性。两种子集均通过后才写入文件，不直接覆盖正式字体。
+
+Skera 与原 fontTools 的二进制布局不同，输出哈希不保证相同；保留推荐字形时会额外保留 U+0000 映射。现有正式子集的 fontTools 来源记录仍保留在 `fonts/NOTICE.txt` 中。采用新输出时，将常用中文版复制到 `fonts/NNChinese-GB2312-Regular.ttf`，同步该声明中的生成器、大小、哈希和字符信息，并重新构建及进游戏验证 PAK。
+
+脚本回归测试：`cargo +nightly test -Zscript --manifest-path scripts/subset_font.rs --jobs 2`。
 
 ## 使用 just（推荐）
 
@@ -48,7 +54,7 @@ just encode-loose
 在 `NuclearNightmareCNPatch` 工程目录运行：
 
 ```powershell
-cargo +nightly -Zscript .\nuclear_cn.rs decode --output .\origin.csv
+cargo +nightly -Zscript .\scripts\nuclear_cn.rs decode --output .\origin.csv
 ```
 
 `decode` 会：
@@ -80,7 +86,7 @@ CSV 字段：
 ## 2. 编译汉化 PAK
 
 ```powershell
-cargo +nightly -Zscript .\nuclear_cn.rs encode --input .\origin.csv --strict
+cargo +nightly -Zscript .\scripts\nuclear_cn.rs encode --input .\origin.csv --strict
 ```
 
 默认输出：
@@ -108,7 +114,7 @@ NuclearNightmare\Content\Paks\zz_NuclearNightmare_Chinese_P.pak
 生成器回归测试：
 
 ```powershell
-cargo +nightly test -Zscript --manifest-path nuclear_cn.rs --jobs 2
+cargo +nightly test -Zscript --manifest-path scripts/nuclear_cn.rs --jobs 2
 ```
 
 ## 常用参数

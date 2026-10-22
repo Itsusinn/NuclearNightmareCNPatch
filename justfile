@@ -1,6 +1,6 @@
 set shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 
-script := "nuclear_cn.rs"
+script := "scripts/nuclear_cn.rs"
 default_csv := "origin.csv"
 default_pak := "NuclearNightmare/Content/Paks/zz_NuclearNightmare_Chinese_P.pak"
 
@@ -23,3 +23,7 @@ encode-loose input=default_csv output=default_pak:
 # 查看 Rust CLI 自带帮助
 help:
     cargo +nightly -Zscript "{{script}}" --help
+
+# 生成并验证常用中文和 UI 字体子集（输出到 target/font-subsets）
+subset-font output="target/font-subsets":
+    cargo +nightly -Zscript scripts/subset_font.rs --output-dir "{{output}}"
