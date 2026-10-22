@@ -17,14 +17,14 @@ serde = { version = "1", features = ["derive"] }
 tempfile = "3"
 ---
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use crc32fast::Hasher;
 use encoding_rs::GBK;
 use locres_rs::locres::{self, Locres, LocresEntry, LocresNamespace};
-use regex::{bytes::Regex as BytesRegex, Regex};
+use regex::{Regex, bytes::Regex as BytesRegex};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -195,8 +195,9 @@ fn decode(args: DecodeArgs) -> Result<()> {
     let mut updated_hashes = 0usize;
     for namespace in resource.iter() {
         for record in namespace.iter() {
-            known_keys.insert(record.key.clone());
-            let (hash, text, context_asset) = match live.get(&record.key) {
+            let identity = (namespace.name.clone(), record.key.clone());
+            known_keys.insert(identity.clone());
+            let (hash, text, context_asset) = match live.get(&identity) {
                 Some((live_text, asset)) => {
                     let live_hash = unreal_text_crc(live_text);
                     if live_hash != record.hash_val {
@@ -218,10 +219,10 @@ fn decode(args: DecodeArgs) -> Result<()> {
     }
 
     let mut inserted = 0usize;
-    for (key, (text, asset)) in &live {
-        if known_keys.insert(key.clone()) {
+    for ((namespace, key), (text, asset)) in &live {
+        if known_keys.insert((namespace.clone(), key.clone())) {
             rows.push(CsvRow {
-                namespace: String::new(),
+                namespace: namespace.clone(),
                 key: key.clone(),
                 hash: unreal_text_crc(text),
                 text: text.clone(),
@@ -251,6 +252,11 @@ fn decode(args: DecodeArgs) -> Result<()> {
         *ordinal += 1;
     }
 
+    let bundled: Vec<CsvRow> =
+        csv::Reader::from_reader(include_bytes!("translations.csv").as_slice())
+            .deserialize()
+            .collect::<std::result::Result<_, _>>()?;
+    let seeded = merge_translations(&mut rows, bundled);
     let preserved = merge_existing_translations(&mut rows, &args.output)?;
     validate_rows(&rows, false)?;
     write_csv(&args.output, &rows)?;
@@ -262,6 +268,7 @@ fn decode(args: DecodeArgs) -> Result<()> {
     println!("从当前 UI 资源补入的新记录：{inserted}");
     println!("从教程地图提取的内嵌文本：{}", tutorial_strings.len());
     println!("从现有 CSV 保留的译文：{preserved}");
+    println!("从随项目提供的翻译库匹配：{seeded}");
     println!("请填写 trans_text 列，然后运行 encode。");
     Ok(())
 }
@@ -584,21 +591,28 @@ fn merge_existing_translations(rows: &mut [CsvRow], path: &Path) -> Result<usize
     if !path.is_file() {
         return Ok(0);
     }
-    let existing = read_csv(path)?;
-    let translations: BTreeMap<(String, String), String> = existing
+    Ok(merge_translations(rows, read_csv(path)?))
+}
+
+fn merge_translations(rows: &mut [CsvRow], existing: Vec<CsvRow>) -> usize {
+    let translations: BTreeMap<_, _> = existing
         .into_iter()
-        .map(|row| ((row.namespace, row.key), row.trans_text))
+        .map(|row| ((row.namespace.clone(), row.key.clone()), row))
         .collect();
     let mut preserved = 0usize;
     for row in rows {
-        if let Some(translation) = translations.get(&(row.namespace.clone(), row.key.clone())) {
-            if !translation.trim().is_empty() {
-                row.trans_text = translation.clone();
+        if let Some(previous) = translations.get(&(row.namespace.clone(), row.key.clone())) {
+            // 更新了原文的键不能悄悄继承旧译文；允许原 locres 的首尾空白差异。
+            if previous.hash == row.hash
+                && previous.text.trim() == row.text.trim()
+                && !previous.trans_text.trim().is_empty()
+            {
+                row.trans_text = previous.trans_text.clone();
                 preserved += 1;
             }
         }
     }
-    Ok(preserved)
+    preserved
 }
 
 fn write_csv(path: &Path, rows: &[CsvRow]) -> Result<()> {
@@ -628,14 +642,16 @@ fn fill_and_validate_translations(rows: &mut [CsvRow]) -> Result<usize> {
             row.trans_text = row.text.clone();
             fallback_count += 1;
         }
-        let source_tokens: BTreeSet<_> = placeholder_re
+        let mut source_tokens: Vec<_> = placeholder_re
             .find_iter(&row.text)
             .map(|capture| capture.as_str())
             .collect();
-        let translated_tokens: BTreeSet<_> = placeholder_re
+        let mut translated_tokens: Vec<_> = placeholder_re
             .find_iter(&row.trans_text)
             .map(|capture| capture.as_str())
             .collect();
+        source_tokens.sort_unstable();
+        translated_tokens.sort_unstable();
         if source_tokens != translated_tokens {
             bail!(
                 "CSV 第 {} 条占位符不一致：原文 {:?}，译文 {:?}",
@@ -648,37 +664,155 @@ fn fill_and_validate_translations(rows: &mut [CsvRow]) -> Result<usize> {
     Ok(fallback_count)
 }
 
-fn scan_live_ftext(assets: &[(String, PathBuf)]) -> Result<BTreeMap<String, (String, String)>> {
-    let key_re = BytesRegex::new(r"\x21\x00\x00\x00([0-9A-F]{32})\x00").unwrap();
+type LiveTexts = BTreeMap<(String, String), (String, String)>;
+
+fn scan_live_ftext(assets: &[(String, PathBuf)]) -> Result<LiveTexts> {
+    // Find identifier FStrings first, then verify the preceding namespace and Base
+    // history header. Searching every zero-filled header is prohibitively slow in
+    // cooked UI assets that also embed large textures.
+    let base_re =
+        BytesRegex::new(r"(?-u:[\x00-\xff][\x00-\x03]\x00\x00[A-Za-z0-9_./:-]{1,1023}\x00)")?;
+    let script_re = BytesRegex::new(r"(?-u:\x29\x01[\x1f\x34])")?;
     let mut live = BTreeMap::new();
     for (asset_name, path) in assets {
         let data = fs::read(path)?;
-        for captures in key_re.captures_iter(&data) {
-            let whole = captures.get(0).unwrap();
-            let key = std::str::from_utf8(captures.get(1).unwrap().as_bytes())?.to_string();
-            let Some(text) = read_fstring(&data, whole.end()) else {
-                continue;
-            };
-            if !text.chars().any(char::is_alphabetic) {
-                continue;
-            }
-            if let Some((previous, previous_asset)) = live.get(&key) {
-                if previous != &text {
-                    bail!("FText key {key} 在 {previous_asset} 与 {asset_name} 中对应不同原文");
-                }
-            } else {
-                live.insert(key, (text, asset_name.clone()));
-            }
-        }
+        scan_text_data(&data, asset_name, &base_re, &script_re, &mut live)?;
     }
     Ok(live)
 }
 
-fn read_fstring(data: &[u8], offset: usize) -> Option<String> {
+fn scan_text_data(
+    data: &[u8],
+    asset: &str,
+    base_re: &BytesRegex,
+    script_re: &BytesRegex,
+    live: &mut LiveTexts,
+) -> Result<()> {
+    for found in base_re.find_iter(data) {
+        if let Some((namespace, key, text)) = read_base_text_at_key(data, found.start()) {
+            insert_live_text(live, namespace, key, text, asset)?;
+        }
+    }
+    for found in script_re.find_iter(data) {
+        // EX_TextConst, LocalizedText: source, key, namespace (string expressions).
+        if let Some((text, end)) = read_script_string(data, found.start() + 2) {
+            if let Some((key, end)) = read_script_string(data, end) {
+                if let Some((namespace, _)) = read_script_string(data, end) {
+                    insert_live_text(live, namespace, key, text, asset)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn valid_text_identity(namespace: &str, key: &str) -> bool {
+    namespace.len() <= 1024
+        && !namespace.chars().any(char::is_control)
+        && !key.is_empty()
+        && key.len() <= 1024
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_./:-".contains(&b))
+        && (key.bytes().any(|b| b.is_ascii_alphabetic())
+            || (key.len() == 32 && key.bytes().all(|b| b.is_ascii_digit())))
+}
+
+fn insert_live_text(
+    live: &mut LiveTexts,
+    namespace: String,
+    key: String,
+    text: String,
+    asset: &str,
+) -> Result<()> {
+    if !valid_text_identity(&namespace, &key)
+        || text.is_empty()
+        || text
+            .chars()
+            .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        return Ok(());
+    }
+    let identity = (namespace, key);
+    if let Some((previous, previous_asset)) = live.get(&identity) {
+        if previous != &text {
+            bail!(
+                "FText {:?} 在 {previous_asset} 与 {asset} 中对应不同原文",
+                identity
+            );
+        }
+    } else {
+        live.insert(identity, (text, asset.to_string()));
+    }
+    Ok(())
+}
+
+fn read_base_text_at_key(data: &[u8], offset: usize) -> Option<(String, String, String)> {
+    let (key, end) = read_fstring_at(data, offset)?;
+    if !valid_text_identity("", &key) {
+        return None;
+    }
+    for span in 4..=offset.min(2054) {
+        let start = offset - span;
+        let Some(header) = start.checked_sub(5).and_then(|n| data.get(n..start)) else {
+            continue;
+        };
+        if header[0] > 0x1f || header[1..] != [0, 0, 0, 0] {
+            continue;
+        }
+        let len = i32::from_le_bytes(data.get(start..start + 4)?.try_into().ok()?);
+        let bytes = (len.unsigned_abs() as usize).checked_mul(if len < 0 { 2 } else { 1 })?;
+        if bytes != span - 4 {
+            continue;
+        }
+        let Some((namespace, ns_end)) = read_fstring_at(data, start) else {
+            continue;
+        };
+        if ns_end == offset && valid_text_identity(&namespace, &key) {
+            let (text, _) = read_fstring_at(data, end)?;
+            return Some((namespace, key, text));
+        }
+    }
+    None
+}
+
+fn read_script_string(data: &[u8], offset: usize) -> Option<(String, usize)> {
+    let start = offset.checked_add(1)?;
+    match data.get(offset)? {
+        0x1f => {
+            let bytes = data.get(start..)?;
+            let len = bytes.iter().take(65536).position(|b| *b == 0)?;
+            Some((
+                std::str::from_utf8(&bytes[..len]).ok()?.to_string(),
+                start + len + 1,
+            ))
+        }
+        0x34 => {
+            let mut units = Vec::new();
+            for pair in data.get(start..)?.chunks_exact(2).take(65536) {
+                let unit = u16::from_le_bytes([pair[0], pair[1]]);
+                if unit == 0 {
+                    return Some((
+                        String::from_utf16(&units).ok()?,
+                        start + (units.len() + 1) * 2,
+                    ));
+                }
+                units.push(unit);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn read_fstring_at(data: &[u8], offset: usize) -> Option<(String, usize)> {
     let length_bytes: [u8; 4] = data.get(offset..offset + 4)?.try_into().ok()?;
     let length = i32::from_le_bytes(length_bytes);
     let start = offset + 4;
-    if length == 0 || length.unsigned_abs() > 1_000_000 {
+    if length == 0 {
+        return Some((String::new(), start));
+    }
+    if length.unsigned_abs() > 1_000_000 {
         return None;
     }
     if length > 0 {
@@ -687,7 +821,10 @@ fn read_fstring(data: &[u8], offset: usize) -> Option<String> {
         if bytes.last().copied()? != 0 {
             return None;
         }
-        String::from_utf8(bytes[..bytes.len() - 1].to_vec()).ok()
+        Some((
+            String::from_utf8(bytes[..bytes.len() - 1].to_vec()).ok()?,
+            end,
+        ))
     } else {
         let units = length.unsigned_abs() as usize;
         let end = start.checked_add(units.checked_mul(2)?)?;
@@ -699,7 +836,7 @@ fn read_fstring(data: &[u8], offset: usize) -> Option<String> {
             .chunks_exact(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect();
-        String::from_utf16(&utf16).ok()
+        Some((String::from_utf16(&utf16).ok()?, end))
     }
 }
 
@@ -715,11 +852,10 @@ fn validate_rows(rows: &[CsvRow], strict: bool) -> Result<()> {
     if rows.is_empty() {
         bail!("CSV/本地化数据为空");
     }
-    let key_re = Regex::new(r"^[0-9A-F]{32}$").unwrap();
     let mut seen = HashSet::new();
     let mut blank = 0usize;
     for (index, row) in rows.iter().enumerate() {
-        if !key_re.is_match(&row.key) {
+        if !valid_text_identity(&row.namespace, &row.key) {
             bail!("第 {} 条记录的 key 无效：{}", index + 2, row.key);
         }
         if row.text.is_empty() {
@@ -996,4 +1132,122 @@ fn ensure_file(path: &Path, label: &str) -> Result<()> {
         bail!("找不到{label}：{}", path.display());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fstring(out: &mut Vec<u8>, text: &str) {
+        out.extend_from_slice(&((text.len() + 1) as i32).to_le_bytes());
+        out.extend_from_slice(text.as_bytes());
+        out.push(0);
+    }
+
+    fn base(namespace: &str, key: &str, text: &str) -> Vec<u8> {
+        let mut out = vec![0; 5];
+        fstring(&mut out, namespace);
+        fstring(&mut out, key);
+        fstring(&mut out, text);
+        out
+    }
+
+    fn scan(data: &[u8]) -> Result<LiveTexts> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("fixture.uexp");
+        fs::write(&path, data)?;
+        scan_live_ftext(&[("fixture".into(), path)])
+    }
+
+    #[test]
+    fn preserves_named_keys_and_separate_namespaces() -> Result<()> {
+        let mut data = base("NNUIRemaster", "Screen_Heading", "FIELD TERMINAL");
+        data.extend(base("Other", "Screen_Heading", "OTHER TITLE"));
+        data.extend(base("", "ABCDEF0123456789ABCDEF0123456789", "Legacy"));
+        data.extend(base("", "01234567890123456789012345678901", "Numeric GUID"));
+        let live = scan(&data)?;
+        assert_eq!(live.len(), 4);
+        assert_eq!(
+            live[&("NNUIRemaster".into(), "Screen_Heading".into())].0,
+            "FIELD TERMINAL"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reads_runtime_template_and_unicode_literals() -> Result<()> {
+        let mut data = vec![0x29, 1];
+        for text in [
+            "PING {M} ms ({State})",
+            "C420C09549DF6364CCE3F3909A777130",
+            "",
+        ] {
+            data.push(0x1f);
+            data.extend(text.as_bytes());
+            data.push(0);
+        }
+        data.extend([0x29, 1, 0x34]);
+        for unit in "温度 {T}".encode_utf16().chain(std::iter::once(0)) {
+            data.extend(unit.to_le_bytes());
+        }
+        for text in ["Temperature", "Runtime"] {
+            data.push(0x1f);
+            data.extend(text.as_bytes());
+            data.push(0);
+        }
+        let live = scan(&data)?;
+        assert_eq!(live.len(), 2);
+        assert_eq!(
+            live[&("Runtime".into(), "Temperature".into())].0,
+            "温度 {T}"
+        );
+        assert_eq!(
+            live[&("".into(), "C420C09549DF6364CCE3F3909A777130".into())].0,
+            "PING {M} ms ({State})"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_conflicting_sources_and_truncated_data() -> Result<()> {
+        let mut data = base("UI", "Title", "One");
+        data.extend(base("UI", "Title", "Two"));
+        assert!(scan(&data).is_err());
+        let mut truncated = base("UI", "Title", "One");
+        truncated.pop();
+        assert!(scan(&truncated)?.is_empty());
+        assert_eq!(read_fstring_at(&i32::MIN.to_le_bytes(), 0), None);
+        assert_eq!(read_script_string(&[0x34, 0x41], 0), None);
+        Ok(())
+    }
+
+    #[test]
+    fn changed_source_does_not_inherit_translation() -> Result<()> {
+        let old = CsvRow {
+            namespace: "UI".into(),
+            key: "Title".into(),
+            hash: unreal_text_crc("Old"),
+            text: "Old".into(),
+            trans_text: "旧".into(),
+            context_asset: "".into(),
+        };
+        let mut current = vec![CsvRow {
+            text: "New".into(),
+            hash: unreal_text_crc("New"),
+            trans_text: "".into(),
+            ..old.clone()
+        }];
+        assert_eq!(merge_translations(&mut current, vec![old]), 0);
+        assert!(current[0].trans_text.is_empty());
+        current[0].trans_text = "新".into();
+        validate_rows(&current, true)?;
+        current[0].text = "PING {M} ms ({State})".into();
+        assert!(fill_and_validate_translations(&mut current).is_err());
+        current[0].text = "{M} / {M}".into();
+        current[0].trans_text = "{M}".into();
+        assert!(fill_and_validate_translations(&mut current).is_err());
+        current[0].trans_text = "{M}，{M}".into();
+        fill_and_validate_translations(&mut current)?;
+        Ok(())
+    }
 }

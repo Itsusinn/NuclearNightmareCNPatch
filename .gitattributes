@@ -1,0 +1,2 @@
+# Preserve embedded newlines in localization CSV fields.
+translations.csv -text
