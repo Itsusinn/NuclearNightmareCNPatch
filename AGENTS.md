@@ -6,6 +6,20 @@
 
 PAK 读写使用固定提交的 [`trumank/repak`](https://github.com/trumank/repak)，LocRes 读写使用固定版本的 [`locres-rs`](https://crates.io/crates/locres-rs)。
 
+## 仓库大文件与字体复现
+
+字体（`*.ttf`）和补丁（`*.pak`）由 Git LFS 管理。克隆后先执行 `git lfs install`、`git lfs pull`，再编译；否则 `include_bytes!` 会读到 LFS 指针而非字体。原始字体 `SarasaGothicSC-Regular.ttf` 和 `fonts/` 下的子集均适用 `fonts/OFL.txt` 中的许可。
+
+`dist/zz_NuclearNightmare_Chinese_P.pak` 是当前已验证的安装包，校验值和验证范围见 `dist/README.md`。更新此文件时须重新严格打包并进游戏验证，同时更新校验值。`target/` 中的中间资源、旧包和缓存，以及 `origin.csv`、Oodle 运行库不提交。
+
+字体精简脚本使用 Python 及固定版本的 fontTools/Pillow，仅在重新生成子集时需要。安装 uv 后运行：
+
+```powershell
+uv run scripts/subset_font.py
+```
+
+默认读取仓库原始字体和 `translations.csv`，在 `target/font-subsets/` 生成常用中文/UI 两种子集、字符覆盖与哈希报告、字形对照图；不直接覆盖正式字体。可用 `--source`、`--translations`、`--output-dir` 指定路径。验证通过后将常用中文版复制到 `fonts/NNChinese-GB2312-Regular.ttf`，同步 `fonts/NOTICE.txt` 的大小、哈希和字符信息，并重新构建 PAK。
+
 ## 使用 just（推荐）
 
 工程位于游戏根目录下的 `NuclearNightmareCNPatch` 文件夹。进入该目录后可以直接运行：
@@ -80,12 +94,14 @@ NuclearNightmare\Content\Paks\zz_NuclearNightmare_Chinese_P.pak
 1. 校验 CSV 键、重复项和 `{...}` 占位符的名称及出现次数。
 2. 将普通 CSV 记录编译为 Unreal `Game.locres`。
 3. 只覆盖英文语言槽 `en`；俄文及其他语言槽保持游戏原版。
-4. 从原游戏提取 `NotoSansSC-Regular`，生成 11 个中文字体覆盖。
+4. 使用随项目提供的 `fonts/NNChinese-GB2312-Regular.ttf`（Sarasa Gothic SC 1.0.42 常用中文子集）生成 11 个中文字体覆盖。原游戏的 `NotoSansSC-Regular.ufont` 仅用作容器格式校验模板；其字体内容会替换为 Sarasa 子集。
 5. 根据 CSV 中的 `__ASSET_TEXT__` 记录，对教程地图内嵌文本进行等长汉化，保持 Blueprint 字节码偏移不变。
-6. 自动读取并保留原 PAK 的版本、mount point 和 path-hash seed，然后生成最终 PAK。
-7. 在 Rust 进程内回读最终 PAK，校验其元数据及 13 个文件（1 个英文本地化文件、11 个字体覆盖和 1 个教程地图补丁）。
+6. 自动读取并保留原 PAK 的版本、mount point 和 path-hash seed，默认使用 Zlib 压缩生成最终 PAK；传入 `--no-compression` 可恢复无压缩打包。
+7. 将 `fonts/OFL.txt` 和 `fonts/NOTICE.txt` 一并打包到 `NuclearNightmare/Content/Localization/ThirdParty/SarasaGothic/`。在 Rust 进程内回读最终 PAK，校验其元数据及 15 个文件（1 个英文本地化文件、11 个字体覆盖、1 个教程地图补丁和 2 个字体许可/版权文件），并逐项解压，与打包前的文件比较完整内容。
 
 `--strict` 会在任何 `trans_text` 留空时停止。省略该参数时，空白译文会自动回退到英文原文。
+
+字体项目：[be5invis/Sarasa-Gothic](https://github.com/be5invis/Sarasa-Gothic)。随项目提供的子集约 3.90 MiB，保留当前翻译库字符、GB2312 常用中文和部分其他字符；完整来源、字符范围与哈希见 `fonts/NOTICE.txt`。新增译文时需检查字符覆盖，必要时重新生成子集。字体适用 OFL 1.1，不能改用代码的 AGPL 许可证；分发时保留 `fonts/OFL.txt` 和版权声明。
 
 严格校验只覆盖提取到的文本，不代表游戏全部文本均已汉化。画质选项中的 `Low`、`Very High` 等普通字符串会由设置逻辑直接赋值，不经过本地化表，目前仍保留英文。它们同时参与选项匹配，不能仅替换显示数组。启动页等其他未提取资源也需要另行排查；每次游戏更新后应重新提取、打包并进游戏验证。
 
@@ -102,6 +118,6 @@ cargo +nightly test -Zscript --manifest-path nuclear_cn.rs --jobs 2
 --work-dir <目录>       保留中间文件，便于排错
 ```
 
-原始游戏 PAK 使用 Oodle 压缩。Oodle 是专有压缩格式，因此 `repak` 会在进程内动态加载 `oo2core_9_win64.dll`：CLI 优先复用游戏目录中已有的运行库，缺失时由 `repak` 自动下载。该 DLL 是压缩算法运行库，不会启动外部工具进程；生成的汉化 PAK 使用无压缩条目。
+原始游戏 PAK 使用 Oodle 压缩。Oodle 是专有压缩格式，因此 `repak` 会在进程内动态加载 `oo2core_9_win64.dll`：CLI 优先复用游戏目录中已有的运行库，缺失时由 `repak` 自动下载。该 DLL 是压缩算法运行库，不会启动外部工具进程；生成的汉化 PAK 默认使用 Zlib 压缩。
 
 安装 PAK 后，请在游戏的“选项 → 显示 → 语言”中选择 `English`，然后重启游戏。`Russian` 将继续使用游戏原版俄文文本。

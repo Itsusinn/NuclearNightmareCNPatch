@@ -1195,7 +1195,7 @@ This organism demonstrates the following key properties:
 "","3A9A397C4E056E74E3B00A98FE0999F9","2047266892","Vote Kick","投票踢出",""
 "","089369B845C6D83EE42E70AE94525D7E","1270605072","You will receive a Steam invite once the new match begins, if you are a Steam friend of the Host...","如果你是房主的 Steam 好友，新比赛开始后你将收到 Steam 邀请……","NuclearNightmare/Content/Graphics/EndGame/RetryButton2.uexp"
 "","45160DDB4435D17CD845209606CD6C40","1270605072","You will receive a Steam invite once the new match begins, if you are a Steam friend of the Host...","如果你是房主的 Steam 好友，新比赛开始后你将收到 Steam 邀请……","NuclearNightmare/Content/Graphics/EndGame/RetryButton.uexp"
-"","F9BBF8AC41402F122B65B0B1906CD339","3856363681","Walk (W, A, S, D)","行走（W、A、S、D）","NuclearNightmare/Content/Graphics/MainMenu/Components/Computer_Keyboard_Layout.uexp"
+"","F9BBF8AC41402F122B65B0B1906CD339","3856363681","Walk (W, A, S, D)","行走（WASD）","NuclearNightmare/Content/Graphics/MainMenu/Components/Computer_Keyboard_Layout.uexp"
 "","C728EF644BF8D9A5933BCCA092E43FDD","2751300427","Warm Blooded","热血",""
 "","4DC8584D4C51405C62901E910330575E","2174599793","Watch your step! Lasers are connected to explosives...","小心脚下！激光与炸药相连...","NuclearNightmare/Content/Graphics/MainMenu/Hints/RandomHints.uexp"
 "","2558E3B649279E6762C8AC955D0528F7","921720663","When you are infected keypads will spray toxic gas injuring you...","当你被感染时，密码键盘会喷射毒气伤害你...","NuclearNightmare/Content/Graphics/MainMenu/Hints/RandomHints.uexp"

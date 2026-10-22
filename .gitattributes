@@ -1,2 +1,4 @@
 # Preserve embedded newlines in localization CSV fields.
 translations.csv -text
+*.ttf filter=lfs diff=lfs merge=lfs -text
+*.pak filter=lfs diff=lfs merge=lfs -text

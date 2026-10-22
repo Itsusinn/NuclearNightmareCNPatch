@@ -32,8 +32,11 @@ use tempfile::TempDir;
 
 const ORIGINAL_PAK: &str = "NuclearNightmare/Content/Paks/NuclearNightmare-Windows.pak";
 const EN_LOCRES: &str = "NuclearNightmare/Content/Localization/Game/en/Game.locres";
-const FONT_SOURCE: &str =
+const FONT_TEMPLATE: &str =
     "NuclearNightmare/Content/Hyper/ResourcePack/Fonts/NotoSans/NotoSansSC-Regular.ufont";
+const SARASA_FONT: &[u8] = include_bytes!("fonts/NNChinese-GB2312-Regular.ttf");
+const SARASA_LICENSE: &[u8] = include_bytes!("fonts/OFL.txt");
+const SARASA_NOTICE: &[u8] = include_bytes!("fonts/NOTICE.txt");
 const TUTORIAL_MAP: &str = "NuclearNightmare/Content/Maps/TutorialMap.uexp";
 const ASSET_TEXT_NAMESPACE: &str = "__ASSET_TEXT__";
 const FONT_TARGETS: &[&str] = &[
@@ -108,6 +111,9 @@ struct EncodeArgs {
     /// 如有空白 trans_text 则报错；默认以原文回退
     #[arg(long)]
     strict: bool,
+    /// 禁用 Zlib 压缩，生成无压缩 PAK
+    #[arg(long)]
+    no_compression: bool,
     /// 保留构建目录到指定位置
     #[arg(long)]
     work_dir: Option<PathBuf>,
@@ -288,7 +294,7 @@ fn encode(args: EncodeArgs) -> Result<()> {
 
     let encode_entries = vec![
         EN_LOCRES.to_string(),
-        FONT_SOURCE.to_string(),
+        FONT_TEMPLATE.to_string(),
         TUTORIAL_MAP.to_string(),
     ];
     let extracted = extract_entries(&pak_path, &encode_entries, root)?;
@@ -323,12 +329,19 @@ fn encode(args: EncodeArgs) -> Result<()> {
         copy_to(&translated_path, &target)?;
     }
 
-    let noto = extracted
-        .get(FONT_SOURCE)
-        .context("内部错误：没有提取中文字体")?;
+    let font_template = extracted
+        .get(FONT_TEMPLATE)
+        .context("内部错误：没有提取字体容器模板")?;
+    let font_override = build_font_override(&fs::read(font_template)?, SARASA_FONT)?;
     for target in FONT_TARGETS {
-        copy_to(noto, &build.join(target))?;
+        let path = build.join(target);
+        fs::create_dir_all(path.parent().context("字体目标路径缺少父目录")?)?;
+        fs::write(path, &font_override)?;
     }
+    let notices = build.join("NuclearNightmare/Content/Localization/ThirdParty/SarasaGothic");
+    fs::create_dir_all(&notices)?;
+    fs::write(notices.join("OFL.txt"), SARASA_LICENSE)?;
+    fs::write(notices.join("NOTICE.txt"), SARASA_NOTICE)?;
 
     let tutorial_source = extracted
         .get(TUTORIAL_MAP)
@@ -339,8 +352,14 @@ fn encode(args: EncodeArgs) -> Result<()> {
     let metadata = read_pak_metadata(&pak_path)?;
     let staged_pak = root.join("Chinese_P.pak");
     let expected_entries = collect_build_entries(&build)?;
-    write_pak(&staged_pak, &build, &expected_entries, &metadata)?;
-    verify_pak(&staged_pak, &expected_entries, &metadata)?;
+    write_pak(
+        &staged_pak,
+        &build,
+        &expected_entries,
+        &metadata,
+        !args.no_compression,
+    )?;
+    verify_pak(&staged_pak, &expected_entries, &metadata, &build)?;
 
     let output = if args.output.is_absolute() {
         args.output
@@ -352,17 +371,21 @@ fn encode(args: EncodeArgs) -> Result<()> {
     }
     fs::copy(&staged_pak, &output)
         .with_context(|| format!("无法写入最终 PAK {}", output.display()))?;
-    verify_pak(&output, &expected_entries, &metadata)?;
+    verify_pak(&output, &expected_entries, &metadata, &build)?;
 
     println!("encode 完成：{}", output.display());
     println!("输入记录：{}", rows.len());
     println!("空白译文回退原文：{fallback_count}");
     println!(
+        "PAK 压缩：{}",
+        if args.no_compression { "无" } else { "Zlib" }
+    );
+    println!(
         "PAK 版本：{}，mount point：{}，path hash seed：{:?}",
         metadata.version, metadata.mount_point, metadata.path_hash_seed
     );
     println!(
-        "仅覆盖 English（en）语言槽，并包含 {} 个中文字体覆盖。",
+        "仅覆盖 English（en）语言槽，并包含 {} 个 Sarasa 常用中文子集字体覆盖。",
         FONT_TARGETS.len()
     );
     println!("已从 CSV 对教程地图中的 {tutorial_patch_count} 段内嵌文本进行等长汉化。");
@@ -450,6 +473,30 @@ fn extract_entries(
     Ok(outputs)
 }
 
+fn build_font_override(template: &[u8], font: &[u8]) -> Result<Vec<u8>> {
+    // This game's cooked .ufont wraps the sfnt payload with a little-endian
+    // i32 byte count and a zero i32 trailer. Reject changed formats on updates.
+    let length = template.get(..4).context("字体容器模板缺少长度字段")?;
+    let length = i32::from_le_bytes(length.try_into()?);
+    if length < 4
+        || template.len() != length as usize + 8
+        || template.get(template.len() - 4..) != Some(&[0, 0, 0, 0][..])
+    {
+        bail!("原游戏 .ufont 容器格式发生变化，不能安全替换字体");
+    }
+    let valid_signature =
+        |bytes: &[u8]| bytes.starts_with(b"OTTO") || bytes.starts_with(&[0, 1, 0, 0]);
+    if !valid_signature(&template[4..]) || !valid_signature(font) {
+        bail!("字体数据不是受支持的 TTF/OTF sfnt 格式");
+    }
+    let font_length = i32::try_from(font.len()).context("字体超过 .ufont 长度上限")?;
+    let mut output = Vec::with_capacity(font.len() + 8);
+    output.extend_from_slice(&font_length.to_le_bytes());
+    output.extend_from_slice(font);
+    output.extend_from_slice(&[0; 4]);
+    Ok(output)
+}
+
 fn collect_build_entries(build: &Path) -> Result<Vec<String>> {
     let mut entries = Vec::new();
     collect_build_entries_inner(build, build, &mut entries)?;
@@ -489,21 +536,24 @@ fn write_pak(
     build: &Path,
     entries: &[String],
     metadata: &PakMetadata,
+    compress: bool,
 ) -> Result<()> {
     if output.is_file() {
         fs::remove_file(output)
             .with_context(|| format!("无法替换旧的暂存 PAK {}", output.display()))?;
     }
     let writer = BufWriter::new(File::create(output)?);
-    let mut pak = repak::PakBuilder::new().writer(
-        writer,
-        metadata.version,
-        metadata.mount_point.clone(),
-        metadata.path_hash_seed,
-    );
+    let mut pak = repak::PakBuilder::new()
+        .compression([repak::Compression::Zlib])
+        .writer(
+            writer,
+            metadata.version,
+            metadata.mount_point.clone(),
+            metadata.path_hash_seed,
+        );
     for entry in entries {
         let data = fs::read(build.join(entry.replace('/', "\\")))?;
-        pak.write_file(entry, false, data)
+        pak.write_file(entry, compress, data)
             .with_context(|| format!("无法写入 PAK 条目 {entry}"))?;
     }
     let mut writer = pak.write_index().context("无法写入 PAK 索引")?;
@@ -511,7 +561,12 @@ fn write_pak(
     Ok(())
 }
 
-fn verify_pak(output: &Path, expected: &[String], metadata: &PakMetadata) -> Result<()> {
+fn verify_pak(
+    output: &Path,
+    expected: &[String],
+    metadata: &PakMetadata,
+    build: &Path,
+) -> Result<()> {
     let file = File::open(output)?;
     let mut reader = BufReader::new(file);
     let pak = repak::PakBuilder::new()
@@ -531,6 +586,15 @@ fn verify_pak(output: &Path, expected: &[String], metadata: &PakMetadata) -> Res
         || pak.path_hash_seed() != metadata.path_hash_seed
     {
         bail!("PAK 元数据校验失败");
+    }
+    for entry in expected {
+        let unpacked = pak
+            .get(entry, &mut reader)
+            .with_context(|| format!("无法解压回读 PAK 条目 {entry}"))?;
+        let source = fs::read(build.join(entry))?;
+        if unpacked != source {
+            bail!("PAK 条目内容校验失败：{entry}");
+        }
     }
     Ok(())
 }
@@ -1137,6 +1201,66 @@ fn ensure_file(path: &Path, label: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn font_override_wraps_sarasa_and_rejects_changed_container() -> Result<()> {
+        let template = [4, 0, 0, 0, b'O', b'T', b'T', b'O', 0, 0, 0, 0];
+        let wrapped = build_font_override(&template, SARASA_FONT)?;
+        assert_eq!(
+            i32::from_le_bytes(wrapped[..4].try_into()?) as usize,
+            SARASA_FONT.len()
+        );
+        assert_eq!(&wrapped[4..wrapped.len() - 4], SARASA_FONT);
+        assert_eq!(&wrapped[wrapped.len() - 4..], &[0; 4]);
+        assert!(build_font_override(&[], SARASA_FONT).is_err());
+        assert!(build_font_override(&template[..8], SARASA_FONT).is_err());
+        let mut changed = template;
+        changed[11] = 1;
+        assert!(build_font_override(&changed, SARASA_FONT).is_err());
+        assert!(build_font_override(&template, b"invalid font").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn pak_roundtrip_checks_compressed_blocks_and_plain_entries() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let build = dir.path().join("build");
+        fs::create_dir_all(build.join("Content"))?;
+        // Cross multiple compression blocks, including a partial final block.
+        let payload: Vec<u8> = (0..300_001).map(|i| (i % 251) as u8).collect();
+        fs::write(build.join("Content/payload.bin"), &payload)?;
+        fs::write(build.join("Content/empty.bin"), [])?;
+        let entries = collect_build_entries(&build)?;
+        let metadata = PakMetadata {
+            version: repak::Version::V11,
+            mount_point: "../../../".into(),
+            path_hash_seed: Some(1111855876),
+        };
+        for compress in [false, true] {
+            let output = dir.path().join(format!("{compress}.pak"));
+            write_pak(&output, &build, &entries, &metadata, compress)?;
+            verify_pak(&output, &entries, &metadata, &build)?;
+            let mut reader = BufReader::new(File::open(&output)?);
+            let pak = repak::PakBuilder::new().reader(&mut reader)?;
+            assert_eq!(
+                pak.used_compression(),
+                if compress {
+                    vec![repak::Compression::Zlib]
+                } else {
+                    vec![]
+                }
+            );
+            if compress {
+                assert!(fs::metadata(&output)?.len() < payload.len() as u64);
+            }
+            let mut changed = payload.clone();
+            changed[150_000] ^= 1;
+            fs::write(build.join("Content/payload.bin"), changed)?;
+            assert!(verify_pak(&output, &entries, &metadata, &build).is_err());
+            fs::write(build.join("Content/payload.bin"), &payload)?;
+        }
+        Ok(())
+    }
 
     fn fstring(out: &mut Vec<u8>, text: &str) {
         out.extend_from_slice(&((text.len() + 1) as i32).to_le_bytes());
