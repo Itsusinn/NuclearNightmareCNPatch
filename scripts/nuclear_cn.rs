@@ -513,6 +513,8 @@ fn is_ui_asset(entry: &str) -> bool {
         || lowered.contains("/dv_snowmobile/ui/")
         || lowered.contains("/nicecolorwheel/widgets/")
         || lowered.contains("/hextree/widgets/")
+        || lowered.contains("/hextree/datatables/")
+        || lowered.contains("/hextree/blueprints/enums/")
         || lowered.contains("/firstperson/input/actions/");
     ui_area && !lowered.contains("/texture") && !lowered.contains("/materials/")
 }
@@ -2314,6 +2316,13 @@ fn ensure_file(path: &Path, label: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn perk_data_tables_are_scanned_for_live_localized_text() {
+        assert!(is_ui_asset("NuclearNightmare/Content/HexTree/DataTables/DT_HexTree.uexp"));
+        assert!(is_ui_asset("NuclearNightmare/Content/HexTree/DataTables/DT_NewTree.uexp"));
+        assert!(is_ui_asset("NuclearNightmare/Content/HexTree/Blueprints/Enums/EHex.uexp"));
+        assert!(!is_ui_asset("NuclearNightmare/Content/HexTree/Textures/T_Perk.uexp"));
+    }
     use super::*;
 
     fn discovery_fixture() -> (PackageLayout, Vec<u8>) {

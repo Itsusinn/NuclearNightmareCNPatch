@@ -24,6 +24,8 @@
 
 生成补丁时会再次扫描并校验所选文本，保留变量、条件和导出结构。设置逻辑字符串及不支持的蓝图表达式仍需另行处理。此工具改动不代表已发布新的补丁版本。
 
+译文审校使用通用工具 `scripts/review_translations.rs`：提取后运行 `just review-prepare`，填写 `review.csv`，再运行 `just review-check` 和 `just review-apply`。正式译文维护在 `translations.csv`，不再为每批文本编写硬编码录入脚本。完整参数及校验范围见 [AGENTS.md](./AGENTS.md)。
+
 ## 字体版权与许可
 
 补丁使用 **Sarasa Gothic SC（更纱黑体）常用中文子集**，基于 1.0.42 版精简，字体大小约 3.90 MiB。原项目：[be5invis/Sarasa-Gothic](https://github.com/be5invis/Sarasa-Gothic)。子集覆盖当前汉化文本、GB2312 常用中文及部分其他字符，不保证罕见字或任意玩家名字、聊天内容的完整显示。

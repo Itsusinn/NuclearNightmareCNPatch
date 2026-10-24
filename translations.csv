@@ -32,9 +32,9 @@
 "","E5D6AD604F115EC47F2FAFBB610476D7","2028544421","+ Beef jerky can be eaten for extra health 
 - Cannot give beef jerky to huskies","+ 牛肉干可食用以回复额外生命值
 - 无法将牛肉干喂给哈士奇",""
-"","198C5F4B4EBF3148D094019C3512E218","1010580269","+ Beepers can detect infected humans 
-- Beeps for uninfected humans as well","+ 传呼机可检测受感染的人类
-- 未感染的人类也会触发哔哔声",""
+"","198C5F4B4EBF3148D094019C3512E218","2101181100","+ Beepers can detect infected humans 
+- Enemies are still detected potentially causing confusion as to the origin","+ 传呼机可检测受感染的人类
+- 仍会检测到敌人，可能难以分辨信号来源","NuclearNightmare/Content/HexTree/DataTables/DT_HexTree.uexp"
 "","4BB4E76F47F3B66A9320A38F0DF8DE33","1010580269","+ Beepers can detect infected humans 
 - Beeps for uninfected humans as well","+ 传呼机可检测受感染的人类
 - 未感染的人类也会触发哔哔声",""
@@ -45,9 +45,9 @@
 "","3D2605574BAC8E557B9B3AA1723C90DE","2993667514","+ Decreases gas consumption by 50% when driving 
 - Drives 50% slower","+ 驾驶时油耗降低 50%
 - 行驶速度降低 50%",""
-"","40D448184623DEDB2BB142A87C326215","2993667514","+ Decreases gas consumption by 50% when driving 
-- Drives 50% slower","+ 驾驶时油耗降低 50%
-- 行驶速度降低 50%",""
+"","40D448184623DEDB2BB142A87C326215","3908079468","+ Decreases gas consumption by 50% when driving 
+- Acceleration to top speed takes twice as long as before","+ 驾驶时油耗降低 50%
+- 加速至最高速度所需时间翻倍","NuclearNightmare/Content/HexTree/DataTables/DT_HexTree.uexp"
 "","05A1210A48304B42DE4716A5A3883CB6","3282460854","+ Equipped with a parachute when entering 
 - Can be used only once","+ 进入时装备降落伞
 - 只能使用一次",""
@@ -104,9 +104,9 @@
 "","759D8AFE44073760A33A7AB138E5E6DA","3467065411","+ Increases flamethrowers damage by 50% - Burns fuel twice as fast","+ 火焰喷射器伤害提升 50% - 燃料消耗速度翻倍",""
 "","21CC1C924080B74CAF4DF0BDCEFE7FE9","3306142792","+ Increases the range on flamethrowers","+ 火焰喷射器射程提升",""
 "","785F356A42E90FECDD3D418F229FEFC2","3306142792","+ Increases the range on flamethrowers","+ 火焰喷射器射程提升",""
-"","8130A3654D3CCD331E7366894A9E3609","357486980","+ Increases vehicles (snowmobiles or helicopter) speed by 50%
-- Burns gas 15% faster","+ 载具（雪地摩托或直升机）速度提升 50%
-- 油耗加快 15%",""
+"","8130A3654D3CCD331E7366894A9E3609","1626025858","+ Increases snowmobile speed by 300%
+- Burns gas 15% faster","+ 雪地摩托速度提高 300%
+- 燃油消耗加快 15%","NuclearNightmare/Content/HexTree/DataTables/DT_HexTree.uexp"
 "","C84D76B74CDEB67C315C09B6F12AB6C9","357486980","+ Increases vehicles (snowmobiles or helicopter) speed by 50%
 - Burns gas 15% faster","+ 载具（雪地摩托或直升机）速度提升 50%
 - 油耗加快 15%",""
@@ -132,9 +132,7 @@
 "","0A9831BD4898AD06CCDE638EC772D55E","1973187749","+ Players don’t take fall damage 
 -Large jumps that would normally kill you still do and long get up animation is played every time you jump","+ 玩家不会受到坠落伤害
 - 本会致命的巨大跳跃仍会造成伤害，且每次跳跃后都会播放长时间起身动画",""
-"","1FBFD7854C74B6E99E44628D6A87AAF7","2420671954","+ Running is completely silent, monsters can’t hear you run
-- Running speed is decreased","+ 奔跑完全无声，怪物听不到你的脚步声
-- 奔跑速度降低",""
+"","1FBFD7854C74B6E99E44628D6A87AAF7","3072945508","+ Running is completely silent, monsters can’t hear you run","+ 奔跑时完全无声，怪物无法听见你的脚步","NuclearNightmare/Content/HexTree/DataTables/DT_HexTree.uexp"
 "","B045D9BC499D16BAE89388B2B795E13F","2420671954","+ Running is completely silent, monsters can’t hear you run
 - Running speed is decreased","+ 奔跑完全无声，怪物听不到你的脚步声
 - 奔跑速度降低",""
@@ -144,9 +142,7 @@
 "","C093B9A146BB8DA3E34BE7B9BDAE5515","997115214","+ Snowmobiles have a rocket boost when you press the space bar 
 - Has a cooldown of 20 seconds","+ 按下空格键时雪地摩托获得火箭加速
 - 冷却时间 20 秒",""
-"","14C99E674C865A4E19601AA58C50844A","996016369","+ Spawn end game helicopter when the last element is collected 
-- Has a 20% chance to spawn randomly","+ 收集到最后一份元素时生成终局直升机
-- 有 20% 概率随机生成",""
+"","14C99E674C865A4E19601AA58C50844A","2378147390","+ Allows you to call the evacuation helicopter without being connected to the satellite","+ 无需连接卫星即可呼叫撤离直升机","NuclearNightmare/Content/HexTree/DataTables/DT_HexTree.uexp"
 "","4C69AED84D2F36E9276A3AA15953E97C","996016369","+ Spawn end game helicopter when the last element is collected 
 - Has a 20% chance to spawn randomly","+ 收集到最后一份元素时生成终局直升机
 - 有 20% 概率随机生成",""
@@ -196,18 +192,18 @@
 "","F83ABCE5400DF51F315E1E8D9D42E3A0","778543085","+ When flamethrowers are out of fuel, if used while empty will be refueled to 100%
 - Cooldown of 10 minutes","+ 火焰喷射器燃料耗尽后，若在空载时使用将回满至 100%
 - 冷却时间 10 分钟",""
-"","4623E96B45CAC816F5C140BD35B5571B","3961207738","+ When jumping it activates the jetpack, which will fly you 1000 feet away from your location
-- Only has one time use","+ 跳跃时启动喷气背包，将你带到距离当前位置 1000 英尺之外
-- 只能使用一次",""
+"","4623E96B45CAC816F5C140BD35B5571B","1395993044","+ When jumping it activates the jetpack, you can hold down the sprint key to move around faster in this mode
+- 30 second cooldown period per jump
+- Decreased run speed after using jetpack for the first time","+ 跳跃时启动喷气背包，按住冲刺键可加快移动
+- 每次跳跃后冷却 30 秒
+- 首次使用喷气背包后，奔跑速度降低","NuclearNightmare/Content/HexTree/DataTables/DT_HexTree.uexp"
 "","D86154D04DA577F30124F7983B25C939","3961207738","+ When jumping it activates the jetpack, which will fly you 1000 feet away from your location
 - Only has one time use","+ 跳跃时启动喷气背包，将你带到距离当前位置 1000 英尺之外
 - 只能使用一次",""
 "","53B6BAA64415D0DDDC0F7FBCD34A3F77","1228698444","+ You can see all of your teammates on the map 
 - When all of your teammates die the map cannot be used","+ 你可以在小地图上看到所有队友
 - 当所有队友死亡后小地图无法使用",""
-"","F84EAD9843F260DF6B30B4A42F0B79BD","1228698444","+ You can see all of your teammates on the map 
-- When all of your teammates die the map cannot be used","+ 你可以在小地图上看到所有队友
-- 当所有队友死亡后小地图无法使用",""
+"","F84EAD9843F260DF6B30B4A42F0B79BD","2093572754","+ You can see all of your teammates on the map","+ 可在地图上看到所有队友","NuclearNightmare/Content/HexTree/DataTables/DT_HexTree.uexp"
 "","6C6CC7E54995A63BE878A3B915DBE46F","4267457220","+ You can see enemy's x-ray/heat signature
 - Only occurs when a motion sensor detects it","+ 你可以看到敌人的透视/热成像轮廓
 - 仅在运动传感器侦测到敌人时生效",""
@@ -1822,3 +1818,21 @@ Only use this option if your data is corrupted or if you wish to start over from
 "__ASSET_TEXT__","555381FEF23AB99C50D8CE0493D68CE0","216456594","Longitude: ","经度：","NuclearNightmare/Content/Graphics/Journal/MapUI.uexp"
 "__ASSET_TEXT__","89B1C41318F5B9F2254C33E22DD60C49","2877737963","  Latitude: ","  纬度：","NuclearNightmare/Content/Graphics/Journal/MapUI.uexp"
 "__ASSET_TEXT__","1B938A289345958C3F6F139ED581B3BF","1466518884","DAY ","日","NuclearNightmare/Content/Graphics/Time/DaysReached_UI.uexp"
+"","06249A954EA772B5825DFDA60CC0D65C","2492730814","+ Grenades have a larger blast radius","+ 手榴弹爆炸范围增大","NuclearNightmare/Content/HexTree/DataTables/DT_HexTree.uexp"
+"","07193882401371AB8AFF7A913AD3D85F","3012822744","+ Grenades explode on impact 
+- A quick timer begins as you release the pin","+ 手榴弹碰撞后立即爆炸
+- 拔出保险销后会开始短暂倒计时","NuclearNightmare/Content/HexTree/DataTables/DT_HexTree.uexp"
+"","22061B7F43CB9816713245B517D78DD3","3796220460","+ Adds option to husky command wheel to cure your husky from infection, must be holding vaccine for command to appear on the wheel
++ Can be used unlimited amount of times without losing vaccine","+ 手持疫苗时，哈士奇指令轮盘会出现治疗感染选项
++ 可无限次使用，且不消耗疫苗","NuclearNightmare/Content/HexTree/DataTables/DT_HexTree.uexp"
+"","24C991A54B9586E29A2CDB8B3E08DC91","1544383473","Licensed Veterinarian","执业兽医","NuclearNightmare/Content/HexTree/Blueprints/Enums/EHex.uexp"
+"","554E0CFB44CA37F9058827A7DABB0843","610683141","+ Enemies that have been downed or crawling can be finished off with the pickaxe","+ 可用镐处决倒地或爬行的敌人","NuclearNightmare/Content/HexTree/DataTables/DT_HexTree.uexp"
+"","5DEFB55C4C8CB95A62752E894B04CD1E","1590315843","Breaker Mode","终结模式","NuclearNightmare/Content/HexTree/Blueprints/Enums/EHex.uexp"
+"","6E034D7246F410DB5BCA1C8C782D4BAD","4287002891","Signal Pair","双发信号","NuclearNightmare/Content/HexTree/Blueprints/Enums/EHex.uexp"
+"","8732157E41FACCA29A087E9B5074081E","3124398389","Detonation Zone","爆破范围","NuclearNightmare/Content/HexTree/Blueprints/Enums/EHex.uexp"
+"","BD9969BF4E8BB06E307D1191D5C154B3","2963388780","+ Dogs emit a warning growl when infected
+- Any Interaction with infected dogs spreads the infection to the player","+ 狗被感染后会发出低吼警告
+- 与受感染的狗进行任何互动都会使玩家感染","NuclearNightmare/Content/HexTree/DataTables/DT_HexTree.uexp"
+"","CBB6194A4458384C934B3FA1944C4308","895220284","Dog Senses","犬类感知","NuclearNightmare/Content/HexTree/Blueprints/Enums/EHex.uexp"
+"","DEC74B0C4C19EFB8FCD69F8001253A76","1979191052","+ Flare guns have 2 rounds","+ 信号枪可装填 2 发弹药","NuclearNightmare/Content/HexTree/DataTables/DT_HexTree.uexp"
+"","F50DBF424D4E03578E52178A76816CCA","169851831","Quick Pin","快速引爆","NuclearNightmare/Content/HexTree/Blueprints/Enums/EHex.uexp"

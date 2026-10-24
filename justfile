@@ -27,3 +27,15 @@ help:
 # 生成并验证常用中文和 UI 字体子集（输出到 target/font-subsets）
 subset-font output="target/font-subsets":
     cargo +nightly -Zscript scripts/subset_font.rs --output-dir "{{output}}"
+
+# 从当前提取快照生成待审译文（不会覆盖非空审校表）
+review-prepare decoded="origin.csv" translations="translations.csv" review="review.csv":
+    cargo +nightly -Zscript scripts/review_translations.rs prepare --decoded "{{decoded}}" --translations "{{translations}}" --review "{{review}}"
+
+# 只读校验审校合并结果及字体覆盖
+review-check decoded="origin.csv" translations="translations.csv" review="review.csv":
+    cargo +nightly -Zscript scripts/review_translations.rs check --decoded "{{decoded}}" --translations "{{translations}}" --review "{{review}}"
+
+# 校验后将审校结果合入正式翻译库
+review-apply decoded="origin.csv" translations="translations.csv" review="review.csv" output="translations.csv":
+    cargo +nightly -Zscript scripts/review_translations.rs apply --decoded "{{decoded}}" --translations "{{translations}}" --review "{{review}}" --output "{{output}}"

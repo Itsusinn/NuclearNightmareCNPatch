@@ -62,7 +62,7 @@ cargo +nightly -Zscript .\scripts\nuclear_cn.rs decode --output .\origin.csv
 `decode` 会：
 
 1. 从原始 `NuclearNightmare-Windows.pak` 单独提取英文 `Game.locres`。
-2. 自动发现并提取游戏的主菜单、建房、服务器列表、服装、背包、地图、任务、结算、技能树、按键设置、聊天、语音设置、载具 HUD 和教程弹窗等 UI `.uexp`，修正游戏更新后失效的文本哈希。
+2. 自动发现并提取游戏的主菜单、建房、服务器列表、服装、背包、地图、任务、结算、技能树、按键设置、聊天、语音设置、载具 HUD 和教程弹窗等 UI `.uexp`，修正游戏更新后失效的文本哈希。专长名称与效果还会扫描 `HexTree/Blueprints/Enums/` 和 `HexTree/DataTables/`，避免仅扫描控件而遗漏实际显示的数据。
 3. 补入这些当前界面中存在、但旧 `locres` 没有的文本。支持带命名空间及可读键的 Base FText（如 `NNUIRemaster`），以及 Blueprint `EX_TextConst/LocalizedText` 中的运行时文本（如动态延迟提示）；以完整 `namespace/key` 区分记录。
 4. 自动枚举 UI、物品、发电机资源及配套头文件，从当前包的名称表、导入表、导出表计算范围和偏移；不再维护逐条资源路径/原文/偏移/版本 MD5 清单。在 Function 导出中解析 `Concat_StrStr` / `SelectString` 的简单字符串赋值，在类默认对象（CDO）内识别符合 FString 序列化格式的人类可读文本，并排除已有本地化 FText 的命名空间、键及原文。CDO 探测属于有范围限制的候选发现，不是完整的 Unreal unversioned 属性 schema 解析；新候选仍需人工确认用途、填写译文。
    保留少量规则：可回写 CDO 属性限于物品和电脑界面，排除测试物品及弹药默认值；主菜单/设置的脚本字符串仅报告，避免修改参与选项匹配的值。教程字幕按实际导入函数 `KismetSystemLibrary.SetStringPropertyByName` 与 `DescText` 属性识别；教程地图标签限定 `LevelLocationMap_C` 实例，排除对象名，定位首个可读标签 FString。其余表达式不猜测跳转结构。
@@ -85,7 +85,30 @@ CSV 字段：
 
 翻译人员只需填写 `trans_text`。请保留 `{type}`、`{1}` 等占位符和必要换行。
 
-`origin.csv` 是本地工作文件，`translations.csv` 是纳入版本管理并随生成器编译的翻译库。完成翻译并校验后，将 `origin.csv` 同步到 `translations.csv`，以便其他环境重新提取时也能恢复译文。
+`origin.csv` 是本地提取快照，`translations.csv` 是纳入版本管理并随生成器编译的正式翻译库。待审译文使用同样六列的 `review.csv`，不要把逐条译文或键清单写进 Rust 程序。
+
+### 通用审校流程
+
+先运行 `decode` 获得当前游戏的提取结果，然后执行：
+
+```powershell
+just review-prepare
+# 编辑 review.csv，只填写 trans_text
+just review-check
+just review-apply
+# 从正式翻译库生成补丁
+just encode translations.csv
+```
+
+这些命令调用 `cargo +nightly -Zscript scripts/review_translations.rs prepare|check|apply`。默认读取 `origin.csv`、`translations.csv`、`review.csv`，校验字体使用 `fonts/NNChinese-GB2312-Regular.ttf`；可用 `--decoded`、`--translations`、`--review` 和 `--font`（check/apply）覆盖路径。`apply` 必须显式指定 `--output`，可以输出到正式翻译库或暂存 CSV。所有相对路径相对于运行目录。
+
+- `prepare` 为新增、原文/哈希变化或缺译的记录生成空译文行。若已有非空审校表，会停止，避免覆盖尚未处理的译文。当前没有待审条目时，`review.csv` 只保留表头。需要修改既有译文时，也可从最新提取结果复制相应行到审校表。
+- `check` 只读校验完整合并结果。以 `namespace/key` 匹配，要求审校表中的原文和哈希与提取结果完全一致；内嵌资源文本还须匹配资源路径。检查重复键、未知键、缺失的旧键、未审定的新增/变更、空译文、占位符名称及次数、中文字体缺字。提取结果中的译文不会自动覆盖正式库。
+- `apply` 执行相同校验，全部通过后写入同目录临时文件、回读确认，再原子替换输出；未涉及的正式记录保持原样。不会改写提取结果或审校表，失败时不覆盖输出。反复应用相同审校内容得到相同记录。
+
+合并后，确认结果并将 `review.csv` 清理为表头，或将本批数据另存归档；正式译文只维护在 `translations.csv`。工具校验的是给定提取快照，不能判断游戏是否已更新，更新后须重新 `decode`。审校也不代替 `encode --strict` 对内嵌文本空间和资源结构的检查。
+
+通用工具测试：`cargo +nightly test -Zscript --manifest-path scripts/review_translations.rs --jobs 2`。原 `fill_discovery_candidates.rs` 与 `fill_perk_translations.rs` 的译文已经合入正式库，其一次性脚本已由此流程取代。
 
 ## 2. 编译汉化 PAK
 
