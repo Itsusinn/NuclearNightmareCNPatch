@@ -2,6 +2,8 @@
 
 为 Nuclear Nightmare 提供简体中文翻译和中文字体，覆盖英文语言槽。部分游戏文本仍保留英文。
 
+当前补丁版本：**v0.1.1**，适配 **抢先体验版 V8.1.1 / Steam build 26172444**（2026-10-24 本机资源）。本次同步版本号、新增蝙蝠的名称与说明及结算计数文本，共 1,266 条翻译记录；教程地图覆盖也按当前游戏资源重新生成。
+
 ## 补丁安装
 
 仓库不跟踪 PAK 文件。补丁可从 [Releases](https://github.com/Itsusinn/NuclearNightmareCNPatch/releases) 下载，或按 [AGENTS.md](./AGENTS.md) 在本地生成。
