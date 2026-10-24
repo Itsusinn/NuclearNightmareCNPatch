@@ -168,16 +168,26 @@ fn decode(args: DecodeArgs) -> Result<()> {
     let workspace = Workspace::new(&args.work_dir, "nuclear-cn-decode-")?;
     let root = workspace.path();
 
-    let ui_assets = discover_ui_assets(&pak_path)?;
+    let mut ui_assets = discover_ui_assets(&pak_path)?;
+    let journal_maps = discover_journal_maps(&pak_path)?;
+    ui_assets.extend(journal_maps.iter().cloned());
     let mut wanted = Vec::with_capacity(2 + ui_assets.len());
     wanted.push(EN_LOCRES.to_string());
     wanted.extend(ui_assets.iter().cloned());
     wanted.push(TUTORIAL_MAP.to_string());
-    let embedded_paths = discover_embedded_paths(&pak_path)?;
+    let mut embedded_paths = discover_embedded_paths(&pak_path)?;
+    embedded_paths.extend(journal_maps.iter().cloned());
     wanted.push(TUTORIAL_MAP.replace(".uexp", ".umap"));
     for path in &embedded_paths {
         wanted.push(path.clone());
-        wanted.push(path.replace(".uexp", ".uasset"));
+        wanted.push(path.replace(
+            ".uexp",
+            if journal_maps.contains(path) {
+                ".umap"
+            } else {
+                ".uasset"
+            },
+        ));
     }
     wanted.sort();
     wanted.dedup();
@@ -202,7 +212,7 @@ fn decode(args: DecodeArgs) -> Result<()> {
             ))
         })
         .collect::<Result<_>>()?;
-    let live = scan_live_ftext(&assets)?;
+    let live = scan_live_ftext(&assets, &extracted)?;
 
     let mut rows = Vec::new();
     let mut known_keys = HashSet::new();
@@ -349,9 +359,17 @@ fn encode(args: EncodeArgs) -> Result<()> {
         .collect();
     embedded_paths.sort();
     embedded_paths.dedup();
+    let journal_maps = discover_journal_maps(&pak_path)?;
     for path in &embedded_paths {
         encode_entries.push(path.clone());
-        encode_entries.push(path.replace(".uexp", ".uasset"));
+        encode_entries.push(path.replace(
+            ".uexp",
+            if journal_maps.contains(path) {
+                ".umap"
+            } else {
+                ".uasset"
+            },
+        ));
     }
     let extracted = extract_entries(&pak_path, &encode_entries, root)?;
     let (scanned_assets, candidates) = scan_embedded_assets(&extracted, &embedded_paths)?;
@@ -452,7 +470,7 @@ fn encode(args: EncodeArgs) -> Result<()> {
         "仅覆盖 English（en）语言槽，并包含 {} 个 Sarasa 常用中文子集字体覆盖。",
         FONT_TARGETS.len()
     );
-    println!("已从 CSV 对教程地图中的 {tutorial_patch_count} 段内嵌文本进行等长汉化。");
+    println!("已汉化教程地图中的 {tutorial_patch_count} 段内嵌文本，并校验配套地图头。");
     println!(
         "已汉化物品操作提示和通知：{} 个资源，{} 段内嵌文本。",
         scanned_assets.len(),
@@ -515,6 +533,7 @@ fn is_ui_asset(entry: &str) -> bool {
         || lowered.contains("/hextree/widgets/")
         || lowered.contains("/hextree/datatables/")
         || lowered.contains("/hextree/blueprints/enums/")
+        || lowered.contains("/gameplay/classifiedmaterials/")
         || lowered.contains("/firstperson/input/actions/");
     ui_area && !lowered.contains("/texture") && !lowered.contains("/materials/")
 }
@@ -804,7 +823,10 @@ fn fill_and_validate_translations(rows: &mut [CsvRow]) -> Result<usize> {
 
 type LiveTexts = BTreeMap<(String, String), (String, String)>;
 
-fn scan_live_ftext(assets: &[(String, PathBuf)]) -> Result<LiveTexts> {
+fn scan_live_ftext(
+    assets: &[(String, PathBuf)],
+    extracted: &BTreeMap<String, PathBuf>,
+) -> Result<LiveTexts> {
     // Find identifier FStrings first, then verify the preceding namespace and Base
     // history header. Searching every zero-filled header is prohibitively slow in
     // cooked UI assets that also embed large textures.
@@ -814,7 +836,20 @@ fn scan_live_ftext(assets: &[(String, PathBuf)]) -> Result<LiveTexts> {
     let mut live = BTreeMap::new();
     for (asset_name, path) in assets {
         let data = fs::read(path)?;
-        scan_text_data(&data, asset_name, &base_re, &script_re, &mut live)?;
+        if let Some(header) = extracted.get(&asset_name.replace(".uexp", ".umap")) {
+            let package = PackageLayout::read(&fs::read(header)?, &data)?;
+            for export in journal_task_exports(&package) {
+                scan_text_data(
+                    &data[export.start..export.end],
+                    asset_name,
+                    &base_re,
+                    &script_re,
+                    &mut live,
+                )?;
+            }
+        } else {
+            scan_text_data(&data, asset_name, &base_re, &script_re, &mut live)?;
+        }
     }
     Ok(live)
 }
@@ -842,6 +877,17 @@ fn scan_text_data(
         }
     }
     Ok(())
+}
+
+fn journal_task_exports(package: &PackageLayout) -> impl Iterator<Item = &CookedExport> {
+    package
+        .exports
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| {
+            package.object_name(package.export_classes[*index]) == Some("ObjectiveManager_C")
+        })
+        .map(|(_, export)| export)
 }
 
 fn valid_text_identity(namespace: &str, key: &str) -> bool {
@@ -1002,6 +1048,10 @@ fn validate_rows(rows: &[CsvRow], strict: bool) -> Result<()> {
         if row.namespace == ASSET_TEXT_NAMESPACE
             && row.context_asset != TUTORIAL_MAP
             && !embedded_scope(&row.context_asset)
+            && !(row
+                .context_asset
+                .starts_with("NuclearNightmare/Content/Maps/")
+                && row.context_asset.ends_with(".uexp"))
         {
             bail!(
                 "第 {} 条资源内嵌文本指向不受支持的资产：{}",
@@ -1195,7 +1245,18 @@ fn patch_tutorial_subtitles(
 ) -> Result<usize> {
     let mut data = fs::read(source)?;
     let original_len = data.len();
-    let strings = scan_tutorial_strings(&fs::read(header)?, &data)?;
+    let mut header_data = fs::read(header)?;
+    let strings = scan_tutorial_strings(&header_data, &data)?;
+    let package = PackageLayout::read(&header_data, &data)?;
+    let label_owners: HashSet<usize> = package
+        .export_classes
+        .iter()
+        .enumerate()
+        .filter(|(_, class)| package.object_name(**class) == Some("LevelLocationMap_C"))
+        .map(|(index, _)| index)
+        .collect();
+    let mut resized_labels = Vec::new();
+    let mut resized_translations = Vec::new();
     let mut occurrences = BTreeMap::<String, usize>::new();
     let map_rows: BTreeMap<&str, &CsvRow> = rows
         .iter()
@@ -1217,6 +1278,21 @@ fn patch_tutorial_subtitles(
                 item.text
             );
         }
+        if matches!(item.encoding, BlueprintStringEncoding::FixedFString) {
+            let (_, end) = read_fstring_at(&data, item.start).context("地图标签无效")?;
+            let capacity = end - item.start - 4;
+            if row.trans_text != item.text
+                && (row.trans_text.encode_utf16().count() + 1) * 2 > capacity
+            {
+                resized_labels.push(UiLiteral {
+                    offset: item.start,
+                    source: item.text.clone(),
+                    layout: UiLiteralLayout::FString,
+                });
+                resized_translations.push(row.trans_text.as_str());
+                continue;
+            }
+        }
         replace_blueprint_string(&mut data, item, &row.trans_text)?;
     }
     if matched != map_rows.len() {
@@ -1225,11 +1301,26 @@ fn patch_tutorial_subtitles(
     if data.len() != original_len {
         bail!("教程地图等长替换校验失败");
     }
+    // Resize only label properties, after all bytecode edits. SerialSize,
+    // SerialOffset and BulkDataStartOffset are updated together in the .umap.
+    // Function exports are compared byte-for-byte against this subtitle-patched
+    // snapshot, so resizing cannot modify their instructions or jump targets.
+    if !resized_labels.is_empty() {
+        replace_export_properties(
+            &mut header_data,
+            &mut data,
+            &resized_labels,
+            &resized_translations,
+            &label_owners,
+            false,
+        )?;
+    }
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
     fs::write(target, data)
         .with_context(|| format!("无法写入教程地图文本补丁 {}", target.display()))?;
+    fs::write(target.with_extension("umap"), header_data)?;
     Ok(matched)
 }
 
@@ -1659,6 +1750,40 @@ fn discover_embedded_paths(pak_path: &Path) -> Result<Vec<String>> {
     Ok(paths)
 }
 
+fn discover_journal_maps(pak_path: &Path) -> Result<Vec<String>> {
+    let mut reader = BufReader::new(File::open(pak_path)?);
+    let pak = repak::PakBuilder::new().reader(&mut reader)?;
+    let files: HashSet<_> = pak.files().into_iter().collect();
+    let mut paths: Vec<_> = files
+        .iter()
+        .filter(|path| {
+            path.starts_with("NuclearNightmare/Content/Maps/") && path.ends_with(".umap")
+        })
+        .map(|path| path.replace(".umap", ".uexp"))
+        .filter(|path| path != TUTORIAL_MAP && files.contains(path))
+        .collect();
+    paths.sort();
+    Ok(paths)
+}
+
+fn embedded_header_path(extracted: &BTreeMap<String, PathBuf>, path: &str) -> Result<String> {
+    let asset = path.replace(".uexp", ".uasset");
+    let map = path.replace(".uexp", ".umap");
+    match (extracted.contains_key(&asset), extracted.contains_key(&map)) {
+        (true, false) => Ok(asset),
+        (false, true) => Ok(map),
+        _ => bail!("缺少或存在歧义的资源头：{path}"),
+    }
+}
+
+fn map_label_literal(data: &[u8], export: &CookedExport) -> Option<UiLiteral> {
+    // Only the first English display FString in LevelLocationMap_C instances.
+    // Leave the following Russian label and actor identifier untouched.
+    property_literals(data, export.start, export.end)
+        .into_iter()
+        .find(|literal| !literal.source.starts_with("LevelLocationMap"))
+}
+
 fn scan_embedded_assets(
     extracted: &BTreeMap<String, PathBuf>,
     paths: &[String],
@@ -1667,7 +1792,8 @@ fn scan_embedded_assets(
     let mut report = Vec::new();
     for path in paths {
         let data = fs::read(extracted.get(path).context("缺少扫描资源")?)?;
-        let header_path = path.replace(".uexp", ".uasset");
+        let header_path = embedded_header_path(extracted, path)?;
+        let is_map = header_path.ends_with(".umap");
         let header = fs::read(extracted.get(&header_path).context("缺少扫描资源头")?)?;
         let package = match PackageLayout::read(&header, &data) {
             Ok(package) => package,
@@ -1689,8 +1815,17 @@ fn scan_embedded_assets(
         for (index, export) in package.exports.iter().enumerate() {
             let mut found = Vec::new();
             let mut kind = "CDO FString";
-            let allowed = property_scope(path);
-            if export.is_default_object {
+            let allowed = if is_map {
+                package.object_name(package.export_classes[index]) == Some("LevelLocationMap_C")
+            } else {
+                property_scope(path)
+            };
+            if is_map {
+                kind = "map label";
+                if allowed {
+                    found.extend(map_label_literal(&data, export));
+                }
+            } else if export.is_default_object {
                 found = property_literals(&data, export.start, export.end);
             } else if package.object_name(package.export_classes[index]) == Some("Function") {
                 kind = "string assignment";
@@ -1964,8 +2099,33 @@ fn patch_embedded_ui(
                 .filter(|(literal, _)| matches!(literal.layout, UiLiteralLayout::FString))
                 .map(|(literal, translation)| (literal.clone(), *translation))
                 .unzip();
-            replace_item_properties(&mut header, &mut data, &properties, &property_translations)?;
-            let target = build.join(asset.path.replace(".uexp", ".uasset"));
+            let header_path = embedded_header_path(extracted, &asset.path)?;
+            if header_path.ends_with(".umap") {
+                let package = PackageLayout::read(&header, &data)?;
+                let owners = package
+                    .export_classes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, class)| package.object_name(**class) == Some("LevelLocationMap_C"))
+                    .map(|(index, _)| index)
+                    .collect();
+                replace_export_properties(
+                    &mut header,
+                    &mut data,
+                    &properties,
+                    &property_translations,
+                    &owners,
+                    false,
+                )?;
+            } else {
+                replace_item_properties(
+                    &mut header,
+                    &mut data,
+                    &properties,
+                    &property_translations,
+                )?;
+            }
+            let target = build.join(header_path);
             fs::create_dir_all(target.parent().context("物品头文件目录无效")?)?;
             fs::write(target, header)?;
         } else if asset
@@ -1986,7 +2146,7 @@ fn read_item_ui_header(
     asset: &EmbeddedUiAsset,
     extracted: &BTreeMap<String, PathBuf>,
 ) -> Result<Vec<u8>> {
-    let path = asset.path.replace(".uexp", ".uasset");
+    let path = embedded_header_path(extracted, &asset.path)?;
     let data = fs::read(extracted.get(&path).context("缺少物品 uasset 头文件")?)?;
     if Some(format!("{:X}", md5::compute(&data))) != asset.header_md5 {
         bail!("物品头文件已变化，须重新核实导出表：{path}");
@@ -2077,12 +2237,30 @@ fn replace_item_properties(
     literals: &[UiLiteral],
     translations: &[&str],
 ) -> Result<()> {
+    let (exports, _) = cooked_item_exports(header, data)?;
+    let allowed = exports
+        .iter()
+        .enumerate()
+        .filter(|(_, export)| export.is_default_object)
+        .map(|(index, _)| index)
+        .collect();
+    replace_export_properties(header, data, literals, translations, &allowed, true)
+}
+
+fn replace_export_properties(
+    header: &mut [u8],
+    data: &mut Vec<u8>,
+    literals: &[UiLiteral],
+    translations: &[&str],
+    allowed_owners: &HashSet<usize>,
+    single_owner: bool,
+) -> Result<()> {
     if literals.len() != translations.len() || literals.is_empty() {
         bail!("物品译文数量不匹配");
     }
     let (exports, bulk_field) = cooked_item_exports(header, data)?;
     let mut edits = Vec::new();
-    let mut owner = None;
+    let mut owners = HashSet::new();
     for (literal, translation) in literals.iter().zip(translations) {
         if !matches!(literal.layout, UiLiteralLayout::FString) || translation.contains('\0') {
             bail!("物品译文结构无效");
@@ -2093,14 +2271,17 @@ fn replace_item_properties(
         }
         let index = exports
             .iter()
-            .position(|export| {
-                export.is_default_object && literal.offset >= export.start && end <= export.end
+            .enumerate()
+            .position(|(index, export)| {
+                allowed_owners.contains(&index)
+                    && literal.offset >= export.start
+                    && end <= export.end
             })
-            .context("物品文本不在类默认对象中，不能改写")?;
-        if owner.is_some_and(|previous| previous != index) {
-            bail!("物品文本跨越多个默认对象");
+            .context("属性文本不在允许改写的导出对象中")?;
+        owners.insert(index);
+        if single_owner && owners.len() > 1 {
+            bail!("属性文本跨越多个默认对象");
         }
-        owner = Some(index);
         let output = if *translation == source {
             data[literal.offset..end].to_vec()
         } else {
@@ -2144,8 +2325,8 @@ fn replace_item_properties(
     header[bulk_field..bulk_field + 8].copy_from_slice(&bulk.to_le_bytes());
     let (updated, _) = cooked_item_exports(header, data)?;
     for (index, (old, new)) in exports.iter().zip(updated).enumerate() {
-        if Some(index) != owner && original[old.start..old.end] != data[new.start..new.end] {
-            bail!("物品改写影响了其他导出（包括蓝图代码）");
+        if !owners.contains(&index) && original[old.start..old.end] != data[new.start..new.end] {
+            bail!("属性改写影响了其他导出（包括蓝图代码）");
         }
     }
     let mut shift = 0i64;
@@ -2317,11 +2498,103 @@ fn ensure_file(path: &Path, label: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn journal_tasks_scan_only_localized_text_in_objective_actors() -> Result<()> {
+        let mut data = base("", "TaskTitle", "The Shelter");
+        fstring(&mut data, "frozenwormcorpse");
+        data.extend(base(
+            "",
+            "TaskDescription",
+            "Photograph the frozen worm's corpse.",
+        ));
+        let boundary = data.len();
+        data.extend(base("", "Unrelated", "Do not collect this actor"));
+        let package = PackageLayout {
+            names: vec![],
+            imports: vec![("ObjectiveManager_C".into(), 0), ("OtherActor_C".into(), 0)],
+            export_names: vec!["Objective".into(), "Other".into()],
+            export_classes: vec![-1, -2],
+            exports: vec![
+                CookedExport {
+                    table_at: 0,
+                    start: 0,
+                    end: boundary,
+                    is_default_object: false,
+                },
+                CookedExport {
+                    table_at: 96,
+                    start: boundary,
+                    end: data.len(),
+                    is_default_object: false,
+                },
+            ],
+        };
+        let exports: Vec<_> = journal_task_exports(&package).collect();
+        assert_eq!(exports.len(), 1);
+        let found = scan(&data[exports[0].start..exports[0].end])?;
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[&(String::new(), "TaskTitle".into())].0, "The Shelter");
+        assert!(!found.keys().any(|(_, key)| key == "Unrelated"));
+        Ok(())
+    }
+
+    #[test]
+    fn journal_map_label_selects_english_without_russian_or_actor_name() {
+        let mut data = vec![0xaa; 10];
+        fstring(&mut data, "Medbay"); // Odd ANSI capacity still needs Unicode resizing.
+        fstring(&mut data, "Russian display label");
+        fstring(&mut data, "LevelLocationMap7");
+        let export = CookedExport {
+            table_at: 0,
+            start: 0,
+            end: data.len(),
+            is_default_object: false,
+        };
+        let found = map_label_literal(&data, &export).unwrap();
+        assert_eq!(found.offset, 10);
+        assert_eq!(found.source, "Medbay");
+        let mut shifted = vec![0xbb; 23];
+        shifted.extend(&data);
+        let export = CookedExport {
+            table_at: 0,
+            start: 23,
+            end: shifted.len(),
+            is_default_object: false,
+        };
+        assert_eq!(map_label_literal(&shifted, &export).unwrap().offset, 33);
+    }
+
+    #[test]
+    fn embedded_header_resolution_requires_one_actual_companion() -> Result<()> {
+        let path = "NuclearNightmare/Content/Maps/NewMap.uexp";
+        let mut extracted = BTreeMap::new();
+        assert!(embedded_header_path(&extracted, path).is_err());
+        extracted.insert(
+            path.replace(".uexp", ".umap"),
+            PathBuf::from("hashed-header.umap"),
+        );
+        assert!(embedded_header_path(&extracted, path)?.ends_with(".umap"));
+        extracted.insert(
+            path.replace(".uexp", ".uasset"),
+            PathBuf::from("ambiguous.uasset"),
+        );
+        assert!(embedded_header_path(&extracted, path).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn perk_data_tables_are_scanned_for_live_localized_text() {
-        assert!(is_ui_asset("NuclearNightmare/Content/HexTree/DataTables/DT_HexTree.uexp"));
-        assert!(is_ui_asset("NuclearNightmare/Content/HexTree/DataTables/DT_NewTree.uexp"));
-        assert!(is_ui_asset("NuclearNightmare/Content/HexTree/Blueprints/Enums/EHex.uexp"));
-        assert!(!is_ui_asset("NuclearNightmare/Content/HexTree/Textures/T_Perk.uexp"));
+        assert!(is_ui_asset(
+            "NuclearNightmare/Content/HexTree/DataTables/DT_HexTree.uexp"
+        ));
+        assert!(is_ui_asset(
+            "NuclearNightmare/Content/HexTree/DataTables/DT_NewTree.uexp"
+        ));
+        assert!(is_ui_asset(
+            "NuclearNightmare/Content/HexTree/Blueprints/Enums/EHex.uexp"
+        ));
+        assert!(!is_ui_asset(
+            "NuclearNightmare/Content/HexTree/Textures/T_Perk.uexp"
+        ));
     }
     use super::*;
 
@@ -2619,6 +2892,106 @@ mod tests {
     }
 
     #[test]
+    fn map_label_growth_preserves_other_exports_and_rejects_unapproved_owners() -> Result<()> {
+        let mut header = vec![0; 52];
+        fstring(&mut header, "/Game/TestMap");
+        header.extend_from_slice(&0x2000u32.to_le_bytes());
+        let summary = header.len();
+        header.resize(768, 0);
+        for (at, value) in [
+            (0, 0x9e2a83c1),
+            (4, -9i32 as u32),
+            (44, 768),
+            (summary + 24, 4),
+            (summary + 28, 320),
+        ] {
+            header[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let mut data = vec![0xaa, 0xbb];
+        let end_at = data.len();
+        fstring(&mut data, "End");
+        data.extend_from_slice(&[0xcc, 0xdd]);
+        let first_end = data.len();
+        data.extend_from_slice(&[0x0f, 0x1f, 0x16, 0x53]);
+        let script_end = data.len();
+        let start_at = data.len();
+        fstring(&mut data, "Start");
+        data.push(0xee);
+        let second_end = data.len();
+        data.extend_from_slice(&[0x11, 0x22, 0x33]);
+        let last_end = data.len();
+        data.extend_from_slice(&0x9e2a83c1u32.to_le_bytes());
+        for (index, (start, end)) in [
+            (0, first_end),
+            (first_end, script_end),
+            (script_end, second_end),
+            (second_end, last_end),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = 320 + 96 * index;
+            header[at + 28..at + 36].copy_from_slice(&((end - start) as i64).to_le_bytes());
+            header[at + 36..at + 44].copy_from_slice(&(768i64 + start as i64).to_le_bytes());
+        }
+        header[summary + 140..summary + 148]
+            .copy_from_slice(&(768i64 + last_end as i64).to_le_bytes());
+        let original = data.clone();
+        let original_header = header.clone();
+        let literals = [
+            UiLiteral {
+                offset: end_at,
+                source: "End".into(),
+                layout: UiLiteralLayout::FString,
+            },
+            UiLiteral {
+                offset: start_at,
+                source: "Start".into(),
+                layout: UiLiteralLayout::FString,
+            },
+        ];
+        assert!(
+            replace_export_properties(
+                &mut header,
+                &mut data,
+                &literals,
+                &["终点", "起点"],
+                &HashSet::from([0]),
+                false
+            )
+            .is_err()
+        );
+        assert_eq!(header, original_header);
+        assert_eq!(data, original);
+        // Neither instance is a CDO. Only the explicitly approved map owners
+        // may resize; the ordinary item path must continue to reject them.
+        assert!(
+            replace_item_properties(&mut header, &mut data, &literals, &["终点", "起点"]).is_err()
+        );
+        replace_export_properties(
+            &mut header,
+            &mut data,
+            &literals,
+            &["终点", "起点"],
+            &HashSet::from([0, 2]),
+            false,
+        )?;
+        let (exports, _) = cooked_item_exports(&header, &data)?;
+        assert_eq!(data.len(), original.len() + 2);
+        assert_eq!(read_fstring_at(&data, end_at).unwrap().0, "终点");
+        assert_eq!(read_fstring_at(&data, start_at + 2).unwrap().0, "起点");
+        assert_eq!(
+            &data[exports[1].start..exports[1].end],
+            &original[first_end..script_end]
+        );
+        assert_eq!(&data[exports[3].start..], &original[second_end..]);
+        assert_eq!(&data[..2], &original[..2]);
+        assert_eq!(&data[exports[0].end - 2..exports[0].end], &[0xcc, 0xdd]);
+        assert_eq!(data[exports[2].end - 1], 0xee);
+        Ok(())
+    }
+
+    #[test]
     fn embedded_ui_scope_excludes_unrelated_packages() {
         assert!(embedded_scope(
             "NuclearNightmare/Content/Graphics/Computer/NewTerminal.uexp"
@@ -2853,7 +3226,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("fixture.uexp");
         fs::write(&path, data)?;
-        scan_live_ftext(&[("fixture".into(), path)])
+        scan_live_ftext(&[("fixture".into(), path)], &BTreeMap::new())
     }
 
     #[test]

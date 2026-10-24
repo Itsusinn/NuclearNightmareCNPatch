@@ -72,6 +72,8 @@ cargo +nightly -Zscript .\scripts\nuclear_cn.rs decode --output .\origin.csv
 
 不会解包完整的游戏 PAK。扫描同一个 `namespace/key` 时若发现不同原文，会报错，避免生成互相冲突的本地化条目。
 
+任务日志另外扫描 `Gameplay/ClassifiedMaterials/` 和 `Maps/` 下实际带 `.umap` 配套头的地图：地图内仅从 `ObjectiveManager_C` 实例提取本地化 FText（任务地点、描述），不修改任务标识；非教程地图的 `LevelLocationMap_C` 实例仅提取首个英文显示 FString，保留后续俄文标签及对象名。地图标签通过通用属性回写同步更新 `.umap` 导出长度、偏移和 `BulkDataStartOffset`，逐个校验未修改导出的字节。任务 FText 仍只写入 `Game.locres`，不会覆盖任务对象。地图文件由原包枚举，无逐地图路径或偏移清单。
+
 CSV 字段：
 
 | 字段 | 用途 |
@@ -129,7 +131,7 @@ NuclearNightmare\Content\Paks\zz_NuclearNightmare_Chinese_P.pak
 3. 只覆盖英文语言槽 `en`；俄文及其他语言槽保持游戏原版。
 4. 使用随项目提供的 `fonts/NNChinese-GB2312-Regular.ttf`（Sarasa Gothic SC 1.0.42 常用中文子集）生成 11 个中文字体覆盖。原游戏的 `NotoSansSC-Regular.ufont` 仅用作容器格式校验模板；其字体内容会替换为 Sarasa 子集。
 5. 按翻译 CSV 涉及的资源重新扫描，独立验证每条 `__ASSET_TEXT__` 的键、原文、哈希和结构；不信任上次扫描的偏移，无法重新定位的记录直接报错。扫描过程中计算的文件指纹仅防止同一次运行内源文件被改动，不锁定某个游戏版本。`encode --work-dir` 下保留 `candidates.csv` 供诊断。
-   字符串拼接和选择赋值先以 Unicode 等长改写，在完整赋值之后补空操作，保留变量参数、条件及后续指令偏移。多个字面量共享同一赋值空间；译文超出可用空间时报错，不截断或猜测跳转修复。教程奇数字节字幕保留独立 void 属性赋值调用的特殊处理；地图标签按原属性槽等长写入 UTF-16，终止符前补空格。
+   字符串拼接和选择赋值先以 Unicode 等长改写，在完整赋值之后补空操作，保留变量参数、条件及后续指令偏移。多个字面量共享同一赋值空间；译文超出可用空间时报错，不截断或猜测跳转修复。教程奇数字节字幕保留独立 void 属性赋值调用的特殊处理；地图标签优先按原属性槽等长写入 UTF-16，终止符前补空格；超长标签仅在已识别的 `LevelLocationMap_C` 实例属性内扩容，同步调整 `.umap` 的导出长度、后续偏移及 `BulkDataStartOffset`，逐个比对其他导出，并将 `.umap` 与 `.uexp` 成对打包。
    CDO FString 属性可以按 UTF-16 实际长度扩缩，同步更新配套 `.uasset` 的导出长度、后续导出偏移和 `BulkDataStartOffset`。同一资源同时包含脚本和属性时先改脚本，再扩缩属性；检查默认对象边界、连续导出、包尾标记、译文回读，逐个比对其他导出。未选中或回退英文的文本保留原始字节。
 6. 自动读取并保留原 PAK 的版本、mount point 和 path-hash seed，默认使用 Zlib 压缩生成最终 PAK；传入 `--no-compression` 可恢复无压缩打包。
 7. 将 `fonts/OFL.txt` 和 `fonts/NOTICE.txt` 一并打包到 `NuclearNightmare/Content/Localization/ThirdParty/SarasaGothic/`。条目数量由实际生成文件计算，在 Rust 进程内回读 PAK、校验元数据，并逐项解压，与打包前的文件比较完整内容。
