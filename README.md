@@ -16,6 +16,14 @@
 
 补丁生成和维护说明见 [AGENTS.md](./AGENTS.md)。
 
+所有脚本源码统一保存在 [`scripts/`](./scripts/README.md)，包括生成器、字体工具和验证工具；运行产物继续写入被 Git 忽略的 `target/`。旧调查脚本和源码快照保留在 `scripts/archive/`。
+
+## 开发中的自动文本发现
+
+运行 `cargo +nightly -Zscript scripts/nuclear_cn.rs decode --output origin.csv` 会扫描当前游戏资源，生成翻译 CSV 和 `origin.candidates.csv` 候选报告。支持的界面字符串、物品/电脑默认属性及教程文本会自动计算结构和偏移；现有译文按键与原文匹配恢复。新增候选需确认用途并填写译文，报告中的 `review_only` / `unsupported` 条目不会自动改写。
+
+生成补丁时会再次扫描并校验所选文本，保留变量、条件和导出结构。设置逻辑字符串及不支持的蓝图表达式仍需另行处理。此工具改动不代表已发布新的补丁版本。
+
 ## 字体版权与许可
 
 补丁使用 **Sarasa Gothic SC（更纱黑体）常用中文子集**，基于 1.0.42 版精简，字体大小约 3.90 MiB。原项目：[be5invis/Sarasa-Gothic](https://github.com/be5invis/Sarasa-Gothic)。子集覆盖当前汉化文本、GB2312 常用中文及部分其他字符，不保证罕见字或任意玩家名字、聊天内容的完整显示。

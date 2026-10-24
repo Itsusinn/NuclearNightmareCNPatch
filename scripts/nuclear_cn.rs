@@ -173,15 +173,17 @@ fn decode(args: DecodeArgs) -> Result<()> {
     wanted.push(EN_LOCRES.to_string());
     wanted.extend(ui_assets.iter().cloned());
     wanted.push(TUTORIAL_MAP.to_string());
-    for asset in EMBEDDED_UI_ASSETS {
-        if !wanted.iter().any(|path| path == asset.path) {
-            wanted.push(asset.path.to_string());
-        }
-        if asset.header_md5.is_some() {
-            wanted.push(asset.path.replace(".uexp", ".uasset"));
-        }
+    let embedded_paths = discover_embedded_paths(&pak_path)?;
+    wanted.push(TUTORIAL_MAP.replace(".uexp", ".umap"));
+    for path in &embedded_paths {
+        wanted.push(path.clone());
+        wanted.push(path.replace(".uexp", ".uasset"));
     }
+    wanted.sort();
+    wanted.dedup();
     let extracted = extract_entries(&pak_path, &wanted, root)?;
+    let (scanned_assets, mut candidates) = scan_embedded_assets(&extracted, &embedded_paths)?;
+    let candidates_path = args.output.with_extension("candidates.csv");
 
     let locres_path = extracted
         .get(EN_LOCRES)
@@ -249,9 +251,38 @@ fn decode(args: DecodeArgs) -> Result<()> {
         .get(TUTORIAL_MAP)
         .context("内部错误：没有提取教程地图字节码")?;
     let tutorial_data = fs::read(tutorial_path)?;
-    let tutorial_strings = scan_blueprint_map_strings(&tutorial_data);
+    let tutorial_header = fs::read(
+        extracted
+            .get(&TUTORIAL_MAP.replace(".uexp", ".umap"))
+            .context("缺少教程地图头")?,
+    )?;
+    let tutorial_strings = scan_tutorial_strings(&tutorial_header, &tutorial_data)?;
     let mut occurrences = BTreeMap::<String, usize>::new();
     for item in &tutorial_strings {
+        let (kind, end) = match item.encoding {
+            BlueprintStringEncoding::FixedFString => (
+                "map label",
+                read_fstring_at(&tutorial_data, item.start)
+                    .context("地图标签无效")?
+                    .1,
+            ),
+            _ => (
+                "DescText subtitle",
+                read_script_string(&tutorial_data, item.start - 1)
+                    .context("字幕无效")?
+                    .1,
+            ),
+        };
+        candidates.push(TextCandidate {
+            asset: TUTORIAL_MAP.into(),
+            export: "TutorialMap".into(),
+            kind: kind.into(),
+            offset: item.start,
+            end,
+            text: item.text.clone(),
+            status: "candidate".into(),
+            reason: "已支持的字幕调用或地图标签范围；填写 CSV 译文后才纳入补丁".into(),
+        });
         let ordinal = occurrences.entry(item.text.clone()).or_default();
         rows.push(CsvRow {
             namespace: ASSET_TEXT_NAMESPACE.to_string(),
@@ -264,7 +295,7 @@ fn decode(args: DecodeArgs) -> Result<()> {
         *ordinal += 1;
     }
 
-    rows.extend(embedded_ui_rows(&extracted)?);
+    rows.extend(embedded_ui_rows(&extracted, &scanned_assets)?);
     let bundled: Vec<CsvRow> =
         csv::Reader::from_reader(include_bytes!("../translations.csv").as_slice())
             .deserialize()
@@ -273,9 +304,15 @@ fn decode(args: DecodeArgs) -> Result<()> {
     let preserved = merge_existing_translations(&mut rows, &args.output)?;
     validate_rows(&rows, false)?;
     write_csv(&args.output, &rows)?;
+    write_candidates(&candidates_path, &candidates)?;
 
     println!("decode 完成：{}", args.output.display());
     println!("记录数：{}", rows.len());
+    println!(
+        "候选报告：{}（{} 项；review_only/unsupported 不会回写）",
+        candidates_path.display(),
+        candidates.len()
+    );
     println!("LocRes 版本：{:?}", resource.version);
     println!("从当前 UI 资源修正的哈希：{updated_hashes}");
     println!("从当前 UI 资源补入的新记录：{inserted}");
@@ -304,18 +341,22 @@ fn encode(args: EncodeArgs) -> Result<()> {
         FONT_TEMPLATE.to_string(),
         TUTORIAL_MAP.to_string(),
     ];
-    encode_entries.extend(
-        EMBEDDED_UI_ASSETS
-            .iter()
-            .map(|asset| asset.path.to_string()),
-    );
-    encode_entries.extend(
-        EMBEDDED_UI_ASSETS
-            .iter()
-            .filter(|asset| asset.header_md5.is_some())
-            .map(|asset| asset.path.replace(".uexp", ".uasset")),
-    );
+    encode_entries.push(TUTORIAL_MAP.replace(".uexp", ".umap"));
+    let mut embedded_paths: Vec<String> = rows
+        .iter()
+        .filter(|row| row.namespace == ASSET_TEXT_NAMESPACE && row.context_asset != TUTORIAL_MAP)
+        .map(|row| row.context_asset.clone())
+        .collect();
+    embedded_paths.sort();
+    embedded_paths.dedup();
+    for path in &embedded_paths {
+        encode_entries.push(path.clone());
+        encode_entries.push(path.replace(".uexp", ".uasset"));
+    }
     let extracted = extract_entries(&pak_path, &encode_entries, root)?;
+    let (scanned_assets, candidates) = scan_embedded_assets(&extracted, &embedded_paths)?;
+    write_candidates(&root.join("candidates.csv"), &candidates)?;
+    validate_discovered_rows(&rows, &scanned_assets)?;
     let source_locres = extracted
         .get(EN_LOCRES)
         .context("内部错误：没有提取英文 Game.locres")?;
@@ -361,12 +402,16 @@ fn encode(args: EncodeArgs) -> Result<()> {
     fs::write(notices.join("OFL.txt"), SARASA_LICENSE)?;
     fs::write(notices.join("NOTICE.txt"), SARASA_NOTICE)?;
 
-    patch_embedded_ui(&extracted, &build, &rows)?;
+    patch_embedded_ui(&extracted, &build, &rows, &scanned_assets)?;
     let tutorial_source = extracted
         .get(TUTORIAL_MAP)
         .context("内部错误：没有提取教程地图字节码")?;
     let tutorial_target = build.join(TUTORIAL_MAP);
-    let tutorial_patch_count = patch_tutorial_subtitles(tutorial_source, &tutorial_target, &rows)?;
+    let tutorial_header = extracted
+        .get(&TUTORIAL_MAP.replace(".uexp", ".umap"))
+        .context("缺少教程地图头")?;
+    let tutorial_patch_count =
+        patch_tutorial_subtitles(tutorial_source, tutorial_header, &tutorial_target, &rows)?;
 
     let metadata = read_pak_metadata(&pak_path)?;
     let staged_pak = root.join("Chinese_P.pak");
@@ -410,8 +455,8 @@ fn encode(args: EncodeArgs) -> Result<()> {
     println!("已从 CSV 对教程地图中的 {tutorial_patch_count} 段内嵌文本进行等长汉化。");
     println!(
         "已汉化物品操作提示和通知：{} 个资源，{} 段内嵌文本。",
-        EMBEDDED_UI_ASSETS.len(),
-        EMBEDDED_UI_ASSETS
+        scanned_assets.len(),
+        scanned_assets
             .iter()
             .map(|asset| asset.literals.len())
             .sum::<usize>()
@@ -954,9 +999,7 @@ fn validate_rows(rows: &[CsvRow], strict: bool) -> Result<()> {
         }
         if row.namespace == ASSET_TEXT_NAMESPACE
             && row.context_asset != TUTORIAL_MAP
-            && !EMBEDDED_UI_ASSETS
-                .iter()
-                .any(|asset| asset.path == row.context_asset)
+            && !embedded_scope(&row.context_asset)
         {
             bail!(
                 "第 {} 条资源内嵌文本指向不受支持的资产：{}",
@@ -990,6 +1033,7 @@ fn copy_to(source: &Path, target: &Path) -> Result<()> {
 enum BlueprintStringEncoding {
     Ansi,
     Unicode,
+    FixedFString,
 }
 
 struct BlueprintMapString {
@@ -1080,30 +1124,91 @@ fn asset_text_key(asset: &str, text: &str, ordinal: usize) -> String {
     format!("{:X}", md5::compute(format!("{asset}\0{text}\0{ordinal}")))
 }
 
-fn patch_tutorial_subtitles(source: &Path, target: &Path, rows: &[CsvRow]) -> Result<usize> {
+fn scan_tutorial_strings(header: &[u8], data: &[u8]) -> Result<Vec<BlueprintMapString>> {
+    let package = PackageLayout::read(header, data)?;
+    let mut strings = Vec::new();
+    for (index, export) in package.exports.iter().enumerate() {
+        match package.object_name(package.export_classes[index]) {
+            Some("Function") => {
+                for mut item in scan_blueprint_map_strings(&data[export.start..export.end]) {
+                    item.start += export.start;
+                    let mut approved = false;
+                    for call in item.start.saturating_sub(160).max(export.start)..item.start {
+                        if data[call] != 0x68
+                            || !package.import_is(
+                                u32_at(data, call + 1)? as i32,
+                                "KismetSystemLibrary",
+                                "SetStringPropertyByName",
+                            )
+                        {
+                            continue;
+                        }
+                        let Some(name_at) = package.simple_operand(data, call + 5) else {
+                            continue;
+                        };
+                        if data.get(name_at) == Some(&0x21)
+                            && package.fname(data, name_at + 1) == Some("DescText")
+                            && name_at + 10 == item.start
+                        {
+                            let (_, end) = read_script_string(data, item.start - 1)
+                                .context("字幕字符串无效")?;
+                            approved = data.get(end) == Some(&0x16);
+                        }
+                    }
+                    if approved {
+                        strings.push(item);
+                    }
+                }
+            }
+            Some("LevelLocationMap_C") => {
+                // This actor's display label is the first human-readable FString.
+                // Actor names and localized FText sources are excluded. Keep the
+                // narrow actor-class rule until other instance schemas are audited.
+                if let Some(literal) = property_literals(data, export.start, export.end)
+                    .into_iter()
+                    .find(|literal| !literal.source.starts_with("LevelLocationMap"))
+                {
+                    let (_, end) = read_fstring_at(data, literal.offset).context("地图标签无效")?;
+                    if (end - literal.offset - 4) % 2 == 0 {
+                        strings.push(BlueprintMapString {
+                            start: literal.offset,
+                            text: literal.source,
+                            encoding: BlueprintStringEncoding::FixedFString,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    strings.sort_by_key(|item| item.start);
+    Ok(strings)
+}
+
+fn patch_tutorial_subtitles(
+    source: &Path,
+    header: &Path,
+    target: &Path,
+    rows: &[CsvRow],
+) -> Result<usize> {
     let mut data = fs::read(source)?;
     let original_len = data.len();
-    let strings = scan_blueprint_map_strings(&data);
+    let strings = scan_tutorial_strings(&fs::read(header)?, &data)?;
     let mut occurrences = BTreeMap::<String, usize>::new();
     let map_rows: BTreeMap<&str, &CsvRow> = rows
         .iter()
         .filter(|row| row.namespace == ASSET_TEXT_NAMESPACE && row.context_asset == TUTORIAL_MAP)
         .map(|row| (row.key.as_str(), row))
         .collect();
-    if map_rows.len() != strings.len() {
-        bail!(
-            "教程地图 CSV 记录数不匹配：CSV {} 条，资源 {} 条；请重新运行 decode",
-            map_rows.len(),
-            strings.len()
-        );
-    }
+    let mut matched = 0;
     for item in &strings {
         let ordinal = occurrences.entry(item.text.clone()).or_default();
         let key = asset_text_key(TUTORIAL_MAP, &item.text, *ordinal);
         *ordinal += 1;
-        let row = map_rows
-            .get(key.as_str())
-            .with_context(|| format!("教程地图 CSV 缺少文本：{}", item.text))?;
+        let Some(row) = map_rows.get(key.as_str()) else {
+            continue;
+        };
+        matched += 1;
         if row.text != item.text || row.hash != unreal_text_crc(&item.text) {
             bail!(
                 "教程地图 CSV 原文或哈希已失效：{}；请重新运行 decode",
@@ -1111,6 +1216,9 @@ fn patch_tutorial_subtitles(source: &Path, target: &Path, rows: &[CsvRow]) -> Re
             );
         }
         replace_blueprint_string(&mut data, item, &row.trans_text)?;
+    }
+    if matched != map_rows.len() {
+        bail!("教程地图部分 CSV 文本无法在当前结构中重新定位，请重新 decode");
     }
     if data.len() != original_len {
         bail!("教程地图等长替换校验失败");
@@ -1120,7 +1228,7 @@ fn patch_tutorial_subtitles(source: &Path, target: &Path, rows: &[CsvRow]) -> Re
     }
     fs::write(target, data)
         .with_context(|| format!("无法写入教程地图文本补丁 {}", target.display()))?;
-    Ok(strings.len())
+    Ok(matched)
 }
 
 fn replace_blueprint_string(
@@ -1134,6 +1242,9 @@ fn replace_blueprint_string(
         bail!("教程地图文本偏移无效：{english}");
     }
     let slot_len = match item.encoding {
+        BlueprintStringEncoding::FixedFString => {
+            return replace_fixed_fstring(data, start, english, chinese);
+        }
         BlueprintStringEncoding::Ansi => {
             if data[start - 1] != 0x1f
                 || data.get(start..start + english.len()) != Some(english.as_bytes())
@@ -1195,451 +1306,544 @@ fn replace_blueprint_string(
     Ok(())
 }
 
-fn validate_tutorial_subtitle_call(data: &[u8], start: usize, slot_len: usize) -> Result<()> {
-    // Verified against TutorialMap V8.1.1's import/name tables: import -196 is
-    // KismetSystemLibrary.SetStringPropertyByName (void), name 140 is DescText,
-    // and name 93 is CallFunc_Create_ReturnValue. This is a standalone call,
-    // with the literal as its final parameter, followed by an EX_Context call.
-    // Do NOT apply the padding trick to arbitrary nested string expressions.
-    // Fail closed when a game update changes this audited bytecode layout.
-    const CALL: &[u8] = &[
-        0x68, 0x3c, 0xff, 0xff, 0xff, // EX_CallMath, import -196
-        0x00, 1, 0, 0, 0, 0x5d, 0, 0, 0, 6, 0, 0, 0, 0x4b, 0, 0, 0, 0x21, 0x8c, 0, 0, 0, 0, 0, 0,
-        0,    // EX_NameConst, DescText
-        0x1f, // EX_StringConst
-    ];
-    const NEXT: &[u8] = &[
-        0x16, // EX_EndFunctionParms
-        0x19, 0x00, 1, 0, 0, 0, 0x5d, 0, 0, 0, 6, 0, 0, 0, 0x4b, 0, 0, 0,
-    ];
-    let prefix = start
-        .checked_sub(CALL.len())
-        .and_then(|at| data.get(at..start));
-    if prefix != Some(CALL)
-        || data.get(start + slot_len..start + slot_len + NEXT.len()) != Some(NEXT)
-    {
-        bail!(
-            "教程地图奇数字节字符串不在已核实的独立字幕调用中，不能安全转换为 Unicode；请检查当前游戏蓝图"
-        );
+fn replace_fixed_fstring(
+    data: &mut [u8],
+    start: usize,
+    source: &str,
+    translation: &str,
+) -> Result<()> {
+    let (original, end) = read_fstring_at(data, start).context("无效地图 FString")?;
+    if original != source || translation.contains('\0') {
+        bail!("地图 FString 原文或译文无效");
+    }
+    if translation == source {
+        return Ok(());
+    }
+    let payload = end - start - 4;
+    let mut units: Vec<u16> = translation.encode_utf16().collect();
+    if payload % 2 != 0 || units.len() + 1 > payload / 2 {
+        bail!("地图属性译文过长或槽位不支持等长 Unicode");
+    }
+    // Keep the serialized property and all subsequent actor/export offsets
+    // unchanged. Spaces belong inside the FString, before its terminator.
+    units.resize(payload / 2 - 1, ' ' as u16);
+    units.push(0);
+    data[start..start + 4].copy_from_slice(&(-(units.len() as i32)).to_le_bytes());
+    for (slot, unit) in data[start + 4..end].chunks_exact_mut(2).zip(units) {
+        slot.copy_from_slice(&unit.to_le_bytes());
+    }
+    let (verified, verified_end) = read_fstring_at(data, start).context("地图译文回读失败")?;
+    if verified_end != end || verified.trim_end() != translation.trim_end() {
+        bail!("地图译文等长回读校验失败");
     }
     Ok(())
 }
 
+fn validate_tutorial_subtitle_call(data: &[u8], start: usize, slot_len: usize) -> Result<()> {
+    // Discovery resolves the function and DescText by name. Here validate the
+    // supported standalone-call shape again, without pinning name/import IDs.
+    let prefix = start.checked_sub(32).and_then(|at| data.get(at..start));
+    let next = data.get(start + slot_len..start + slot_len + 19);
+    let valid = match (prefix, next) {
+        (Some(p), Some(n)) => {
+            p[0] == 0x68
+                && i32::from_le_bytes(p[1..5].try_into().unwrap()) < 0
+                && matches!(p[5], 0x00 | 0x01 | 0x02 | 0x48)
+                && p[6..10] == [1, 0, 0, 0]
+                && p[22] == 0x21
+                && p[27..31] == [0, 0, 0, 0]
+                && p[31] == 0x1f
+                && n[..2] == [0x16, 0x19]
+                && p[5..22] == n[2..19]
+        }
+        _ => false,
+    };
+    if !valid {
+        bail!("奇数字节字幕不在支持的独立属性赋值调用中");
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
 enum UiLiteralLayout {
-    ConcatAssignment { start: usize, end: usize },
+    StringAssignment { start: usize, end: usize },
     FString,
 }
 
+#[derive(Clone)]
 struct UiLiteral {
     offset: usize,
-    source: &'static str,
+    source: String,
     layout: UiLiteralLayout,
 }
 
 struct EmbeddedUiAsset {
-    path: &'static str,
-    // A compatibility fingerprint, not a security boundary. These offsets and
-    // statement boundaries were audited against V8.1.1's original assets.
-    md5: &'static str,
-    header_md5: Option<&'static str>,
-    literals: &'static [UiLiteral],
+    path: String,
+    // Fresh discovery results, not a game-version allowlist. Fingerprints only
+    // detect local files changing between scanning and writing in this run.
+    md5: String,
+    header_md5: Option<String>,
+    literals: Vec<UiLiteral>,
 }
 
-const EMBEDDED_UI_ASSETS: &[EmbeddedUiAsset] = &[
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Generators/BP_GeneratorGameplayNew.uexp",
-        md5: "E60F752D8DE2D4BDE7788E930F672211",
-        header_md5: None,
-        literals: &[
-            UiLiteral {
-                offset: 30267,
-                source: " has powered on the ",
-                layout: UiLiteralLayout::ConcatAssignment {
-                    start: 30228,
-                    end: 30307,
-                },
-            },
-            UiLiteral {
-                offset: 30363,
-                source: " generator...",
-                layout: UiLiteralLayout::ConcatAssignment {
-                    start: 30307,
-                    end: 30379,
-                },
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Graphics/Inventory/InventoryUI.uexp",
-        md5: "EDB4D9C47FAA419F93AF9D382CFA62E5",
-        header_md5: None,
-        literals: &[UiLiteral {
-            offset: 18136,
-            source: "(Q) To Drop ",
-            layout: UiLiteralLayout::ConcatAssignment {
-                start: 18097,
-                end: 18168,
-            },
-        }],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_Barricade.uexp",
-        md5: "B02306FCE7D691C61B88D73DD24488F4",
-        header_md5: Some("6A0D3F7C99D28D243F922FF65B0A83C5"),
-        literals: &[
-            UiLiteral {
-                offset: 4611,
-                source: "Barricade",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 4625,
-                source: "(E) Interact with a door when closed to use.",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_BeefJerky.uexp",
-        md5: "1AE76F81B130254B72B927C8717002A4",
-        header_md5: Some("FA6E4A0C527B45EFE239FEA1147D9102"),
-        literals: &[
-            UiLiteral {
-                offset: 4607,
-                source: "Beef Jerky",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 4646,
-                source: "Used for feeding huskies...",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_Cassette.uexp",
-        md5: "906FE470745F9EA6FBB1683C5F1C6FEA",
-        header_md5: Some("4151F449D4D3D0DB2D023A1915BDAD4B"),
-        literals: &[
-            UiLiteral {
-                offset: 4668,
-                source: "Cassette",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 4705,
-                source: "(E) interact with tape recorder to play",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_Flamethrower.uexp",
-        md5: "5519A37AF75548152C0043B1A00595B4",
-        header_md5: Some("76B8D2514397FC7AFADF5EAAC08F1B3A"),
-        literals: &[
-            UiLiteral {
-                offset: 5248,
-                source: "Flamethrower",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 5289,
-                source: "(LMB) to Use Flamethrower",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_Flare.uexp",
-        md5: "69E18C054999A444339EF421F79AB317",
-        header_md5: Some("5A5FE467DBFE919B593572C857B2B2E9"),
-        literals: &[
-            UiLiteral {
-                offset: 4691,
-                source: "Flare",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 4701,
-                source: "Press (LMB) to use Flare",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_FlareGun.uexp",
-        md5: "E55E77B4C786A3AB1D679C0863376C7E",
-        header_md5: Some("1589420B7CC955D030CD5223958B3C60"),
-        literals: &[
-            UiLiteral {
-                offset: 4668,
-                source: "Flare Gun",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 4706,
-                source: "(LMB) to shoot",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_Flashlight.uexp",
-        md5: "A23AD7C214FDEA9B63FE16F382D79308",
-        header_md5: Some("0375868095C14B833F31D6A5710806A0"),
-        literals: &[
-            UiLiteral {
-                offset: 5832,
-                source: "Flashlight",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 5871,
-                source: "(F) To Toggle Flashlight",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_GasCanster.uexp",
-        md5: "9E8B02589B8159FEBFA46641DDB256CB",
-        header_md5: Some("7480276A150404FE4B88C4D47B200AC1"),
-        literals: &[
-            UiLiteral {
-                offset: 3889,
-                source: "Gas Canister",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 3906,
-                source: "(LMB) to Refuel Snowmobile",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_Glowstick.uexp",
-        md5: "07519997E50A58A6B624783BDDD45A5B",
-        header_md5: Some("4662488A09351E346886459FF3A9904F"),
-        literals: &[
-            UiLiteral {
-                offset: 4601,
-                source: "Glowstick",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 4615,
-                source: "(G) To Toggle Glowstick",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_Grenade.uexp",
-        md5: "EE96AABEA70BA3787EDF4A888C3C2AF2",
-        header_md5: Some("4FF69FA0AA1C84B61CAE4FB5A843595A"),
-        literals: &[
-            UiLiteral {
-                offset: 4670,
-                source: "Grenade",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 4706,
-                source: "(LMB) to once to aim then to throw...",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_MotionTracker.uexp",
-        md5: "69F84FF6AC2F13216EE1541F6DC66F25",
-        header_md5: Some("3F94A7A3CDFD87B72CB8902C013DAD46"),
-        literals: &[
-            UiLiteral {
-                offset: 4607,
-                source: "Motion Tracker",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 4626,
-                source: "Beeps when Motion is Detected",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_Painkillers.uexp",
-        md5: "9EA1906CE954D0D288D8BED27D422C18",
-        header_md5: Some("DB136E5AFFECF9CE7C98F975711E650B"),
-        literals: &[
-            UiLiteral {
-                offset: 4689,
-                source: "Painkillers",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 4705,
-                source: "(LMB) to Take Painkillers",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_Pickaxe.uexp",
-        md5: "EE1808AA96BA339301C811173BC79C0F",
-        header_md5: Some("0B5BCA089C657E6A170F196253B27753"),
-        literals: &[
-            UiLiteral {
-                offset: 20089,
-                source: "Pickaxe",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 20125,
-                source: "(LMB) to swing",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_PoolCue.uexp",
-        md5: "6F1105D610FFCFBF51FE839DC9CAAF37",
-        header_md5: Some("D5F438CBE730BB702129637DC21EE0FE"),
-        literals: &[
-            UiLiteral {
-                offset: 11201,
-                source: "Pool Cue",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 11238,
-                source: "(LMB) To shoot.",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_Radio.uexp",
-        md5: "3D08974A0153B91401826B2082292B8C",
-        header_md5: Some("E51BE9D1D49D027D9F4ABB56D5F8A86A"),
-        literals: &[
-            UiLiteral {
-                offset: 1240,
-                source: "Radio",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 1250,
-                source: "Hold (LMB) to Talk into Radio",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_Revolver.uexp",
-        md5: "E4D4EBEA834AF70BCA0F7DA092A319F4",
-        header_md5: Some("59D80897B26A013214E0E064D5EEDECC"),
-        literals: &[
-            UiLiteral {
-                offset: 5333,
-                source: "Revolver",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 5370,
-                source: "(LMB) to shoot",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_Shotgun.uexp",
-        md5: "5D1D3D1AF45F189A67FA0F2D046C9C18",
-        header_md5: Some("24F3E535265500878D6E8EB3FCD116DE"),
-        literals: &[
-            UiLiteral {
-                offset: 5335,
-                source: "Shotgun",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 5371,
-                source: "(LMB) to shoot",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_Sniper.uexp",
-        md5: "C37BB14BEB864A19E2C1A0F0B55024C1",
-        header_md5: Some("1B4E56FE66B17584927671DA74453315"),
-        literals: &[
-            UiLiteral {
-                offset: 5335,
-                source: "Sniper",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 5370,
-                source: "(LMB) to shoot (RMB) to aim",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_Syringe.uexp",
-        md5: "8611339C5FCC6716EBEC667A5CC70031",
-        header_md5: Some("F43FD7651B7781831FD18116394B323A"),
-        literals: &[
-            UiLiteral {
-                offset: 4691,
-                source: "Vaccine",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 4703,
-                source: "Press (LMB) to use Vaccine",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/Item_mp5.uexp",
-        md5: "24860A6ADE52D0DAC1040B4BC0AD2968",
-        header_md5: Some("F31BFADD548187D6552E3976BF8E925D"),
-        literals: &[
-            UiLiteral {
-                offset: 5335,
-                source: "MP5K",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 5368,
-                source: "(LMB) to shoot",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-    EmbeddedUiAsset {
-        path: "NuclearNightmare/Content/Gameplay/Items/PoolCue/PoolCue.uexp",
-        md5: "354EC2260780D3DB2F5D7F40A2ACB9E2",
-        header_md5: Some("D6CD604C7A693EA59AFAE8632A5BE138"),
-        literals: &[
-            UiLiteral {
-                offset: 1320,
-                source: "Pool Cue",
-                layout: UiLiteralLayout::FString,
-            },
-            UiLiteral {
-                offset: 1333,
-                source: "(LMB) To Shoot",
-                layout: UiLiteralLayout::FString,
-            },
-        ],
-    },
-];
+#[derive(Debug, Serialize)]
+struct TextCandidate {
+    asset: String,
+    export: String,
+    kind: String,
+    offset: usize,
+    end: usize,
+    text: String,
+    status: String,
+    reason: String,
+}
+
+struct PackageLayout {
+    names: Vec<String>,
+    imports: Vec<(String, i32)>,
+    export_names: Vec<String>,
+    export_classes: Vec<i32>,
+    exports: Vec<CookedExport>,
+}
+
+impl PackageLayout {
+    fn read(header: &[u8], data: &[u8]) -> Result<Self> {
+        let (exports, _) = cooked_item_exports(header, data)?;
+        let summary = read_fstring_at(header, 52).context("包路径无效")?.1 + 4;
+        let count = u32_at(header, summary)? as usize;
+        let mut cursor = u32_at(header, summary + 4)? as usize;
+        if count > header.len() / 8 {
+            bail!("名称表长度无效");
+        }
+        let mut names = Vec::with_capacity(count);
+        for _ in 0..count {
+            let (name, end) = read_fstring_at(header, cursor).context("名称表损坏")?;
+            cursor = end.checked_add(4).context("名称表溢出")?;
+            if cursor > header.len() {
+                bail!("名称表越界");
+            }
+            names.push(name);
+        }
+        let name_at = |at| -> Result<String> {
+            let index = u32_at(header, at)? as usize;
+            let number = u32_at(header, at + 4)?;
+            let name = names.get(index).context("FName 索引无效")?;
+            Ok(if number == 0 {
+                name.clone()
+            } else {
+                format!("{name}_{}", number - 1)
+            })
+        };
+        let import_count = u32_at(header, summary + 32)? as usize;
+        let import_at = u32_at(header, summary + 36)? as usize;
+        let export_at = u32_at(header, summary + 28)? as usize;
+        if import_count > header.len() / 32
+            || import_at.checked_add(import_count * 32) != Some(export_at)
+        {
+            bail!("不支持的导入表布局");
+        }
+        let mut imports = Vec::new();
+        for i in 0..import_count {
+            let at = import_at + i * 32;
+            imports.push((name_at(at + 20)?, u32_at(header, at + 16)? as i32));
+        }
+        let mut export_names = Vec::new();
+        let mut export_classes = Vec::new();
+        for export in &exports {
+            export_names.push(name_at(export.table_at + 16)?);
+            export_classes.push(u32_at(header, export.table_at)? as i32);
+        }
+        Ok(Self {
+            names,
+            imports,
+            export_names,
+            export_classes,
+            exports,
+        })
+    }
+
+    fn object_name(&self, reference: i32) -> Option<&str> {
+        if reference < 0 {
+            self.imports
+                .get(reference.unsigned_abs() as usize - 1)
+                .map(|v| v.0.as_str())
+        } else if reference > 0 {
+            self.export_names
+                .get(reference as usize - 1)
+                .map(String::as_str)
+        } else {
+            None
+        }
+    }
+
+    fn import_is(&self, reference: i32, owner: &str, function: &str) -> bool {
+        reference < 0
+            && self
+                .imports
+                .get(reference.unsigned_abs() as usize - 1)
+                .is_some_and(|(name, outer)| {
+                    name == function && self.object_name(*outer) == Some(owner)
+                })
+    }
+
+    fn fname<'a>(&'a self, data: &[u8], at: usize) -> Option<&'a str> {
+        if u32_at(data, at + 4).ok()? != 0 {
+            return None;
+        }
+        self.names
+            .get(u32_at(data, at).ok()? as usize)
+            .map(String::as_str)
+    }
+
+    fn field_path(&self, data: &[u8], at: usize) -> Option<usize> {
+        let count = u32_at(data, at).ok()? as usize;
+        if count == 0 || count > 16 {
+            return None;
+        }
+        for i in 0..count {
+            self.names
+                .get(u32_at(data, at + 4 + i * 8).ok()? as usize)?;
+            u32_at(data, at + 8 + i * 8).ok()?;
+        }
+        let end = at + 4 + count * 8 + 4;
+        self.object_name(u32_at(data, end - 4).ok()? as i32)?;
+        Some(end)
+    }
+
+    fn simple_operand(&self, data: &[u8], at: usize) -> Option<usize> {
+        match *data.get(at)? {
+            0x00 | 0x01 | 0x02 | 0x48 => self.field_path(data, at + 1),
+            0x1f | 0x34 => read_script_string(data, at).map(|(_, end)| end),
+            0x25..=0x28 => Some(at + 1),
+            _ => None,
+        }
+    }
+
+    fn string_assignment(&self, data: &[u8], start: usize) -> Option<(usize, Vec<UiLiteral>)> {
+        if *data.get(start)? != 0x0f {
+            return None;
+        }
+        let target = self.field_path(data, start + 1)?;
+        if !matches!(*data.get(target)?, 0x00 | 0x01 | 0x02 | 0x48) {
+            return None;
+        }
+        let call = self.simple_operand(data, target)?;
+        if *data.get(call)? != 0x68 {
+            return None;
+        }
+        let function = u32_at(data, call + 1).ok()? as i32;
+        let arguments = if self.import_is(function, "KismetStringLibrary", "Concat_StrStr") {
+            2
+        } else if self.import_is(function, "KismetMathLibrary", "SelectString") {
+            3
+        } else {
+            return None;
+        };
+        let mut at = call + 5;
+        let mut literals = Vec::new();
+        for _ in 0..arguments {
+            if let Some((source, _)) = read_script_string(data, at) {
+                if candidate_text(&source) {
+                    literals.push(UiLiteral {
+                        offset: at,
+                        source,
+                        layout: UiLiteralLayout::StringAssignment { start, end: 0 },
+                    });
+                }
+            }
+            at = self.simple_operand(data, at)?;
+        }
+        if *data.get(at)? != 0x16 {
+            return None;
+        }
+        let end = at + 1;
+        for literal in &mut literals {
+            literal.layout = UiLiteralLayout::StringAssignment { start, end };
+        }
+        Some((end, literals))
+    }
+}
+
+fn candidate_text(text: &str) -> bool {
+    let value = text.trim();
+    (3..=4096).contains(&value.chars().count())
+        && value.chars().any(|c| c.is_alphabetic())
+        && !value
+            .chars()
+            .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+        && !value.contains('\0')
+        && !value.starts_with('/')
+        && !value.contains("\\")
+        && !value.contains("/Game/")
+        && !value.contains("/Engine/")
+        && !value.contains('_')
+        && !value.contains("://")
+        && !(value.len() >= 16 && value.bytes().all(|b| b.is_ascii_hexdigit()))
+        && !(value.contains('.') && !value.contains(' ') && !value.ends_with("..."))
+}
+
+fn property_literals(data: &[u8], start: usize, end: usize) -> Vec<UiLiteral> {
+    let mut localized_sources = HashSet::new();
+    for at in start..end.saturating_sub(4) {
+        if let Some((namespace, _, _)) = read_base_text_at_key(&data[..end], at) {
+            localized_sources.insert(at); // key, not visible text
+            for ns_at in at.saturating_sub(2054).max(start)..at {
+                if read_fstring_at(&data[..end], ns_at)
+                    .is_some_and(|(text, tail)| tail == at && text == namespace)
+                {
+                    localized_sources.insert(ns_at);
+                }
+            }
+            if let Some((_, source_at)) = read_fstring_at(&data[..end], at) {
+                localized_sources.insert(source_at);
+            }
+        }
+    }
+    let mut output = Vec::new();
+    let mut at = start;
+    while at + 4 <= end {
+        let length = i32::from_le_bytes(data[at..at + 4].try_into().unwrap()).unsigned_abs();
+        if (4..=4097).contains(&length) && !localized_sources.contains(&at) {
+            if let Some((source, tail)) = read_fstring_at(&data[..end], at) {
+                if candidate_text(&source) {
+                    output.push(UiLiteral {
+                        offset: at,
+                        source,
+                        layout: UiLiteralLayout::FString,
+                    });
+                    at = tail;
+                    continue;
+                }
+            }
+        }
+        at += 1;
+    }
+    output
+}
+
+fn embedded_scope(path: &str) -> bool {
+    path.ends_with(".uexp")
+        && (is_ui_asset(path)
+            || path.starts_with("NuclearNightmare/Content/Gameplay/Items/")
+            || path.starts_with("NuclearNightmare/Content/Gameplay/Generators/"))
+}
+
+fn property_scope(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    (path.contains("/Gameplay/Items/") || path.contains("/Graphics/Computer/"))
+        && !lower.contains("test")
+        && !lower.contains("ammo")
+        && !lower.contains("buckshot")
+}
+
+fn script_scope(path: &str) -> bool {
+    // Settings strings can also be comparison keys. Keep that area report-only;
+    // its localized FText continues through the normal locres scanner.
+    (path.contains("/Graphics/") || path.contains("/Gameplay/Generators/"))
+        && !path.contains("/Graphics/MainMenu/")
+        && !path.to_ascii_lowercase().contains("test")
+}
+
+fn discover_embedded_paths(pak_path: &Path) -> Result<Vec<String>> {
+    let mut reader = BufReader::new(File::open(pak_path)?);
+    let pak = repak::PakBuilder::new().reader(&mut reader)?;
+    let files: HashSet<_> = pak.files().into_iter().collect();
+    let mut paths: Vec<_> = files
+        .iter()
+        .filter(|path| embedded_scope(path) && files.contains(&path.replace(".uexp", ".uasset")))
+        .cloned()
+        .collect();
+    paths.sort();
+    Ok(paths)
+}
+
+fn scan_embedded_assets(
+    extracted: &BTreeMap<String, PathBuf>,
+    paths: &[String],
+) -> Result<(Vec<EmbeddedUiAsset>, Vec<TextCandidate>)> {
+    let mut assets = Vec::new();
+    let mut report = Vec::new();
+    for path in paths {
+        let data = fs::read(extracted.get(path).context("缺少扫描资源")?)?;
+        let header_path = path.replace(".uexp", ".uasset");
+        let header = fs::read(extracted.get(&header_path).context("缺少扫描资源头")?)?;
+        let package = match PackageLayout::read(&header, &data) {
+            Ok(package) => package,
+            Err(error) => {
+                report.push(TextCandidate {
+                    asset: path.clone(),
+                    export: String::new(),
+                    kind: "package".into(),
+                    offset: 0,
+                    end: data.len(),
+                    text: String::new(),
+                    status: "unsupported".into(),
+                    reason: error.to_string(),
+                });
+                continue;
+            }
+        };
+        let mut literals = Vec::new();
+        for (index, export) in package.exports.iter().enumerate() {
+            let mut found = Vec::new();
+            let mut kind = "CDO FString";
+            let allowed = property_scope(path);
+            if export.is_default_object {
+                found = property_literals(&data, export.start, export.end);
+            } else if package.object_name(package.export_classes[index]) == Some("Function") {
+                kind = "string assignment";
+                let mut at = export.start;
+                while at < export.end {
+                    if let Some((end, group)) = package.string_assignment(&data[..export.end], at) {
+                        found.extend(group);
+                        at = end;
+                    } else {
+                        at += 1;
+                    }
+                }
+                // Collect other readable bytecode literals for review, but do
+                // not patch expressions whose complete boundaries we cannot
+                // safely rewrite. Skip localized FText triples handled above.
+                let mut at = export.start;
+                while at < export.end {
+                    if data.get(at..at + 2) == Some(&[0x29, 0x01]) {
+                        let mut cursor = at + 2;
+                        let mut complete = true;
+                        for _ in 0..3 {
+                            if let Some((_, end)) = read_script_string(&data[..export.end], cursor)
+                            {
+                                cursor = end;
+                            } else {
+                                complete = false;
+                                break;
+                            }
+                        }
+                        if complete {
+                            at = cursor;
+                            continue;
+                        }
+                    }
+                    if let Some((text, end)) = read_script_string(&data[..export.end], at) {
+                        if candidate_text(&text)
+                            && !found.iter().any(|literal| literal.offset == at)
+                        {
+                            report.push(TextCandidate {
+                                asset: path.clone(),
+                                export: package.export_names[index].clone(),
+                                kind: "other script literal".into(),
+                                offset: at,
+                                end,
+                                text,
+                                status: "review_only".into(),
+                                reason: "尚未支持的表达式；不修改字节码或跳转".into(),
+                            });
+                        }
+                        at = end;
+                    } else {
+                        at += 1;
+                    }
+                }
+            }
+            for literal in found {
+                let patchable = if kind == "string assignment" {
+                    script_scope(path)
+                } else {
+                    allowed
+                };
+                let end = match literal.layout {
+                    UiLiteralLayout::FString => read_fstring_at(&data, literal.offset).unwrap().1,
+                    UiLiteralLayout::StringAssignment { end, .. } => end,
+                };
+                report.push(TextCandidate {
+                    asset: path.clone(),
+                    export: package.export_names[index].clone(),
+                    kind: kind.into(),
+                    offset: literal.offset,
+                    end,
+                    text: literal.source.clone(),
+                    status: if patchable {
+                        "candidate"
+                    } else {
+                        "review_only"
+                    }
+                    .into(),
+                    reason: if patchable {
+                        "结构可回写；填写 CSV 译文后才纳入补丁"
+                    } else {
+                        "范围外属性（包括设置逻辑、测试物品及弹药默认值），仅报告"
+                    }
+                    .into(),
+                });
+                if patchable {
+                    literals.push(literal);
+                }
+            }
+        }
+        literals.sort_by_key(|literal| literal.offset);
+        if !literals.is_empty() {
+            let properties = literals
+                .iter()
+                .any(|literal| matches!(literal.layout, UiLiteralLayout::FString));
+            assets.push(EmbeddedUiAsset {
+                path: path.clone(),
+                md5: format!("{:X}", md5::compute(&data)),
+                header_md5: properties.then(|| format!("{:X}", md5::compute(&header))),
+                literals,
+            });
+        }
+    }
+    Ok((assets, report))
+}
+
+fn write_candidates(path: &Path, candidates: &[TextCandidate]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = BufWriter::new(File::create(path)?);
+    file.write_all(&[0xef, 0xbb, 0xbf])?;
+    let mut writer = csv::Writer::from_writer(file);
+    for candidate in candidates {
+        writer.serialize(candidate)?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn validate_discovered_rows(rows: &[CsvRow], assets: &[EmbeddedUiAsset]) -> Result<()> {
+    let available: BTreeMap<_, _> = assets
+        .iter()
+        .flat_map(|asset| {
+            asset
+                .literals
+                .iter()
+                .enumerate()
+                .map(move |(index, literal)| {
+                    (
+                        (asset.path.as_str(), embedded_ui_key(asset, index)),
+                        literal.source.as_str(),
+                    )
+                })
+        })
+        .collect();
+    for row in rows
+        .iter()
+        .filter(|row| row.namespace == ASSET_TEXT_NAMESPACE && row.context_asset != TUTORIAL_MAP)
+    {
+        if available
+            .get(&(row.context_asset.as_str(), row.key.clone()))
+            .copied()
+            != Some(row.text.as_str())
+            || row.hash != unreal_text_crc(&row.text)
+        {
+            bail!(
+                "CSV 文本无法在当前支持结构中唯一定位：{} / {:?}；请重新 decode 并查看候选报告",
+                row.context_asset,
+                row.text
+            );
+        }
+    }
+    Ok(())
+}
 
 fn read_embedded_ui_asset(asset: &EmbeddedUiAsset, path: &Path) -> Result<Vec<u8>> {
     let data = fs::read(path)?;
@@ -1649,36 +1853,48 @@ fn read_embedded_ui_asset(asset: &EmbeddedUiAsset, path: &Path) -> Result<Vec<u8
             asset.path
         );
     }
-    for literal in asset.literals {
+    for literal in &asset.literals {
         let parsed = match literal.layout {
-            UiLiteralLayout::ConcatAssignment { .. } => read_script_string(&data, literal.offset),
+            UiLiteralLayout::StringAssignment { .. } => read_script_string(&data, literal.offset),
             UiLiteralLayout::FString => read_fstring_at(&data, literal.offset),
         };
-        if parsed.as_ref().map(|(text, _)| text.as_str()) != Some(literal.source) {
+        if parsed.as_ref().map(|(text, _)| text.as_str()) != Some(literal.source.as_str()) {
             bail!("内嵌 UI 原文不匹配：{} / {}", asset.path, literal.source);
         }
     }
     Ok(data)
 }
 
-fn embedded_ui_rows(extracted: &BTreeMap<String, PathBuf>) -> Result<Vec<CsvRow>> {
+fn embedded_ui_key(asset: &EmbeddedUiAsset, index: usize) -> String {
+    let source = &asset.literals[index].source;
+    let ordinal = asset.literals[..index]
+        .iter()
+        .filter(|literal| &literal.source == source)
+        .count();
+    asset_text_key(&asset.path, &source, ordinal)
+}
+
+fn embedded_ui_rows(
+    extracted: &BTreeMap<String, PathBuf>,
+    scanned_assets: &[EmbeddedUiAsset],
+) -> Result<Vec<CsvRow>> {
     let mut rows = Vec::new();
-    for asset in EMBEDDED_UI_ASSETS {
+    for asset in scanned_assets {
         read_embedded_ui_asset(
             asset,
-            extracted.get(asset.path).context("缺少内嵌 UI 资源")?,
+            extracted.get(&asset.path).context("缺少内嵌 UI 资源")?,
         )?;
         if asset.header_md5.is_some() {
             read_item_ui_header(asset, extracted)?;
         }
-        for literal in asset.literals {
+        for (index, literal) in asset.literals.iter().enumerate() {
             rows.push(CsvRow {
                 namespace: ASSET_TEXT_NAMESPACE.into(),
-                key: asset_text_key(asset.path, literal.source, 0),
-                hash: unreal_text_crc(literal.source),
-                text: literal.source.into(),
+                key: embedded_ui_key(asset, index),
+                hash: unreal_text_crc(&literal.source),
+                text: literal.source.clone(),
                 trans_text: String::new(),
-                context_asset: asset.path.into(),
+                context_asset: asset.path.clone(),
             });
         }
     }
@@ -1689,30 +1905,35 @@ fn patch_embedded_ui(
     extracted: &BTreeMap<String, PathBuf>,
     build: &Path,
     rows: &[CsvRow],
+    scanned_assets: &[EmbeddedUiAsset],
 ) -> Result<()> {
-    for asset in EMBEDDED_UI_ASSETS {
+    for asset in scanned_assets {
         let mut data = read_embedded_ui_asset(
             asset,
-            extracted.get(asset.path).context("缺少内嵌 UI 资源")?,
+            extracted.get(&asset.path).context("缺少内嵌 UI 资源")?,
         )?;
         let asset_rows: Vec<_> = rows
             .iter()
             .filter(|row| row.namespace == ASSET_TEXT_NAMESPACE && row.context_asset == asset.path)
             .collect();
-        if asset_rows.len() != asset.literals.len() {
+        if asset_rows.is_empty() {
+            continue;
+        }
+        if asset_rows.len() > asset.literals.len() {
             bail!("内嵌 UI CSV 记录数不匹配，请重新 decode：{}", asset.path);
         }
         let translations: Vec<&str> = asset
             .literals
             .iter()
-            .map(|literal| {
-                let key = asset_text_key(asset.path, literal.source, 0);
-                let row = asset_rows
-                    .iter()
-                    .find(|row| row.key == key)
-                    .context("缺少内嵌 UI 译文")?;
+            .enumerate()
+            .map(|(index, literal)| {
+                let key = embedded_ui_key(asset, index);
+                let row = asset_rows.iter().find(|row| row.key == key);
+                let Some(row) = row else {
+                    return Ok(literal.source.as_str());
+                };
                 if row.text != literal.source
-                    || row.hash != unreal_text_crc(literal.source)
+                    || row.hash != unreal_text_crc(&literal.source)
                     || row.trans_text.contains('\0')
                 {
                     bail!("内嵌 UI 原文、哈希或译文无效：{}", literal.source);
@@ -1720,18 +1941,39 @@ fn patch_embedded_ui(
                 Ok(row.trans_text.as_str())
             })
             .collect::<Result<_>>()?;
+        // Script edits keep their byte length. Apply them before resizing CDO
+        // properties, which relocates later exports and their serialized data.
+        let (script_literals, script_translations): (Vec<_>, Vec<_>) = asset
+            .literals
+            .iter()
+            .zip(&translations)
+            .filter(|(literal, _)| {
+                matches!(literal.layout, UiLiteralLayout::StringAssignment { .. })
+            })
+            .map(|(literal, translation)| (literal.clone(), *translation))
+            .unzip();
+        replace_ui_assignments(&mut data, &script_literals, &script_translations)?;
         if asset.header_md5.is_some() {
             let mut header = read_item_ui_header(asset, extracted)?;
-            replace_item_properties(&mut header, &mut data, asset.literals, &translations)?;
+            let (properties, property_translations): (Vec<_>, Vec<_>) = asset
+                .literals
+                .iter()
+                .zip(&translations)
+                .filter(|(literal, _)| matches!(literal.layout, UiLiteralLayout::FString))
+                .map(|(literal, translation)| (literal.clone(), *translation))
+                .unzip();
+            replace_item_properties(&mut header, &mut data, &properties, &property_translations)?;
             let target = build.join(asset.path.replace(".uexp", ".uasset"));
             fs::create_dir_all(target.parent().context("物品头文件目录无效")?)?;
             fs::write(target, header)?;
-        } else {
-            for (literal, translation) in asset.literals.iter().zip(translations) {
-                replace_ui_concat_literal(&mut data, literal, translation)?;
-            }
+        } else if asset
+            .literals
+            .iter()
+            .any(|literal| matches!(literal.layout, UiLiteralLayout::FString))
+        {
+            bail!("FString 属性缺少配套头文件：{}", asset.path);
         }
-        let target = build.join(asset.path);
+        let target = build.join(&asset.path);
         fs::create_dir_all(target.parent().context("UI 目标目录无效")?)?;
         fs::write(target, data)?;
     }
@@ -1744,7 +1986,7 @@ fn read_item_ui_header(
 ) -> Result<Vec<u8>> {
     let path = asset.path.replace(".uexp", ".uasset");
     let data = fs::read(extracted.get(&path).context("缺少物品 uasset 头文件")?)?;
-    if Some(format!("{:X}", md5::compute(&data)).as_str()) != asset.header_md5 {
+    if Some(format!("{:X}", md5::compute(&data))) != asset.header_md5 {
         bail!("物品头文件已变化，须重新核实导出表：{path}");
     }
     Ok(data)
@@ -1775,7 +2017,8 @@ fn i64_at(data: &[u8], at: usize) -> Result<i64> {
 }
 
 fn cooked_item_exports(header: &[u8], data: &[u8]) -> Result<(Vec<CookedExport>, usize)> {
-    // Audited cooked UE5 layout, pinned by the .uasset/.uexp fingerprints.
+    // Supported cooked UE5 layout; table bounds, flags and serial ranges are
+    // checked independently on each scan. No game-version fingerprint required.
     // Export map: class/super/template/outer (16), name (8), flags (4),
     // SerialSize (8), SerialOffset (8), then flags/dependencies; 96 bytes total.
     // These unversioned-property exports have no script-serialization ranges.
@@ -1915,12 +2158,81 @@ fn replace_item_properties(
     Ok(())
 }
 
+fn replace_ui_assignments(
+    data: &mut [u8],
+    literals: &[UiLiteral],
+    translations: &[&str],
+) -> Result<()> {
+    if literals.len() != translations.len() {
+        bail!("UI 译文数量不匹配");
+    }
+    let mut groups = BTreeMap::<(usize, usize), Vec<(&UiLiteral, &str)>>::new();
+    for (literal, translation) in literals.iter().zip(translations) {
+        let UiLiteralLayout::StringAssignment { start, end } = literal.layout else {
+            bail!("不是字符串赋值");
+        };
+        groups
+            .entry((start, end))
+            .or_default()
+            .push((literal, translation));
+    }
+    let mut previous_end = 0;
+    for ((start, end), mut group) in groups {
+        if start < previous_end || start >= end || end > data.len() {
+            bail!("UI 赋值边界重叠或越界");
+        }
+        previous_end = end;
+        if group.len() == 1 {
+            replace_ui_concat_literal(data, group[0].0, group[0].1)?;
+            continue;
+        }
+        // MapWidget's EX_Let wraps SelectString (import -121): NIGHT, DAY,
+        // then the unchanged boolean operand. Rewrite both literals together
+        // so growth of DAY can consume the byte saved by NIGHT. Never insert
+        // padding inside the nested expression or move the next statement.
+        if data.get(start) != Some(&0x0f) || data.get(end - 1) != Some(&0x16) {
+            bail!("UI 字符串选择赋值结构不匹配");
+        }
+        group.sort_by_key(|(literal, _)| literal.offset);
+        let mut replacement = data[start..end].to_vec();
+        let mut next = end;
+        for (literal, translation) in group.into_iter().rev() {
+            let (source, tail) =
+                read_script_string(data, literal.offset).context("无效 UI 字符串")?;
+            if literal.offset <= start
+                || tail > next
+                || source != literal.source
+                || translation.contains('\0')
+            {
+                bail!("UI 字符串选择参数不匹配");
+            }
+            next = literal.offset;
+            if translation == source {
+                continue;
+            }
+            let bytes = std::iter::once(0x34).chain(
+                translation
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .flat_map(u16::to_le_bytes),
+            );
+            replacement.splice(literal.offset - start..tail - start, bytes);
+        }
+        if replacement.len() > end - start {
+            bail!("UI 字符串选择译文超过赋值槽位");
+        }
+        replacement.resize(end - start, 0x0b);
+        data[start..end].copy_from_slice(&replacement);
+    }
+    Ok(())
+}
+
 fn replace_ui_concat_literal(
     data: &mut [u8],
     literal: &UiLiteral,
     translation: &str,
 ) -> Result<()> {
-    let UiLiteralLayout::ConcatAssignment { start, end } = literal.layout else {
+    let UiLiteralLayout::StringAssignment { start, end } = literal.layout else {
         bail!("不是字符串拼接赋值");
     };
     let (source, tail) = read_script_string(data, literal.offset).context("无效 UI 字符串")?;
@@ -2004,6 +2316,200 @@ fn ensure_file(path: &Path, label: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn discovery_fixture() -> (PackageLayout, Vec<u8>) {
+        let package = PackageLayout {
+            names: vec!["ReturnValue".into()],
+            imports: vec![
+                ("KismetStringLibrary".into(), 0),
+                ("Concat_StrStr".into(), -1),
+            ],
+            export_names: vec!["Owner".into()],
+            export_classes: vec![0],
+            exports: Vec::new(),
+        };
+        let mut field = 1u32.to_le_bytes().to_vec();
+        field.extend_from_slice(&0u32.to_le_bytes());
+        field.extend_from_slice(&7u32.to_le_bytes()); // numbered FName
+        field.extend_from_slice(&1i32.to_le_bytes());
+        let mut code = vec![0x0f];
+        code.extend_from_slice(&field);
+        code.push(0x00);
+        code.extend_from_slice(&field);
+        code.push(0x68);
+        code.extend_from_slice(&(-2i32).to_le_bytes());
+        code.push(0x1f);
+        code.extend_from_slice(b"New display label \0");
+        code.push(0x01);
+        code.extend_from_slice(&field);
+        code.push(0x16);
+        (package, code)
+    }
+
+    #[test]
+    fn discovery_relocates_new_text_and_resolves_changed_import_indices() -> Result<()> {
+        let (mut package, code) = discovery_fixture();
+        let (_, first) = package.string_assignment(&code, 0).context("未发现赋值")?;
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].source, "New display label ");
+        let mut shifted = vec![0xaa; 137];
+        shifted.extend_from_slice(&code);
+        package.imports.insert(0, ("UnrelatedImport".into(), 0));
+        package.imports[2].1 = -2;
+        shifted[137 + 35..137 + 39].copy_from_slice(&(-3i32).to_le_bytes());
+        let (end, found) = package
+            .string_assignment(&shifted, 137)
+            .context("移动后未发现赋值")?;
+        assert_eq!(end, shifted.len());
+        assert_eq!(found[0].offset, first[0].offset + 137);
+        assert_eq!(found[0].source, first[0].source);
+        replace_ui_assignments(&mut shifted, &found, &["新标签 "])?;
+        assert_eq!(
+            read_script_string(&shifted, found[0].offset).unwrap().0,
+            "新标签 "
+        );
+        assert_eq!(&shifted[..137], &[0xaa; 137]);
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_rejects_unknown_calls_and_complex_operands() {
+        let (mut package, mut code) = discovery_fixture();
+        package.imports[0].0 = "UnrelatedGameplayLibrary".into();
+        assert!(package.string_assignment(&code, 0).is_none());
+        package.imports[0].0 = "KismetStringLibrary".into();
+        let variable = code.len() - 18;
+        code[variable] = 0x19; // context with skip offset: unsupported
+        assert!(package.string_assignment(&code, 0).is_none());
+        code[variable] = 0x01;
+        code.pop();
+        assert!(package.string_assignment(&code, 0).is_none());
+    }
+
+    #[test]
+    fn property_discovery_skips_localized_text_and_internal_identifiers() {
+        let mut data = vec![0xee; 19];
+        let first = data.len();
+        fstring(&mut data, "New Item");
+        data.extend(base("UI", "VisibleLabel", "Already localized"));
+        fstring(&mut data, "/Game/Blueprints/Internal.Asset");
+        fstring(&mut data, "Internal_Object_Name");
+        let second = data.len();
+        fstring(&mut data, "New Item");
+        let found = property_literals(&data, 0, data.len());
+        assert_eq!(
+            found.iter().map(|v| v.offset).collect::<Vec<_>>(),
+            [first, second]
+        );
+        let asset = EmbeddedUiAsset {
+            path: "NuclearNightmare/Content/Gameplay/Items/Item_New.uexp".into(),
+            md5: String::new(),
+            header_md5: None,
+            literals: found,
+        };
+        assert_ne!(embedded_ui_key(&asset, 0), embedded_ui_key(&asset, 1));
+        assert_eq!(
+            embedded_ui_key(&asset, 0),
+            asset_text_key(&asset.path, "New Item", 0)
+        );
+    }
+
+    #[test]
+    fn encoding_requires_rediscovery_of_every_requested_row() -> Result<()> {
+        let (_, code) = discovery_fixture();
+        let (package, _) = discovery_fixture();
+        let (_, literals) = package.string_assignment(&code, 0).unwrap();
+        let asset = EmbeddedUiAsset {
+            path: "NuclearNightmare/Content/Graphics/Inventory/NewUI.uexp".into(),
+            md5: String::new(),
+            header_md5: None,
+            literals,
+        };
+        let mut row = CsvRow {
+            namespace: ASSET_TEXT_NAMESPACE.into(),
+            key: embedded_ui_key(&asset, 0),
+            hash: unreal_text_crc("New display label "),
+            text: "New display label ".into(),
+            trans_text: "新标签".into(),
+            context_asset: asset.path.clone(),
+        };
+        validate_discovered_rows(&[row.clone()], std::slice::from_ref(&asset))?;
+        assert!(validate_discovered_rows(&[row.clone()], &[]).is_err());
+        row.hash ^= 1;
+        assert!(validate_discovered_rows(&[row], &[asset]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn map_day_night_selection_preserves_boolean_operand_and_next_statement() -> Result<()> {
+        let hex = "0F0100000040000000000000004700000000010000004000000000000000470000006887FFFFFF1F4E4947485420001F4441592000000100000018000000000000004700000016";
+        let original: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+            .collect();
+        let end = original.len();
+        let literals = [
+            UiLiteral {
+                offset: 39,
+                source: "NIGHT ".into(),
+                layout: UiLiteralLayout::StringAssignment { start: 0, end },
+            },
+            UiLiteral {
+                offset: 47,
+                source: "DAY ".into(),
+                layout: UiLiteralLayout::StringAssignment { start: 0, end },
+            },
+        ];
+        let mut data = original.clone();
+        data.extend_from_slice(&[0x0f, 0xaa, 0xbb]);
+        let tail = data[53..].to_vec();
+        replace_ui_assignments(&mut data, &literals, &["夜 ", "日 "])?;
+        assert_eq!(read_script_string(&data, 39), Some(("夜 ".into(), 46)));
+        assert_eq!(read_script_string(&data, 46), Some(("日 ".into(), 53)));
+        assert_eq!(&data[53..], tail);
+        assert_eq!(&data[..39], &original[..39]);
+        let mut fallback = original.clone();
+        replace_ui_assignments(&mut fallback, &literals, &["NIGHT ", "DAY "])?;
+        assert_eq!(fallback, original);
+        let mut rejected = original.clone();
+        assert!(
+            replace_ui_assignments(&mut rejected, &literals, &["夜晚时段", "白天时段"]).is_err()
+        );
+        assert_eq!(rejected, original);
+        Ok(())
+    }
+
+    #[test]
+    fn map_location_fstring_preserves_adjacent_actor_data() -> Result<()> {
+        let mut original = vec![0xaa, 0xbb];
+        fstring(&mut original, "Helicopter Location");
+        original.extend_from_slice(&[0x2e, 0x32, 0, 0, 1, 0, 0, 0]);
+        let mut data = original.clone();
+        replace_fixed_fstring(&mut data, 2, "Helicopter Location", "直升机位置")?;
+        let (text, end) = read_fstring_at(&data, 2).unwrap();
+        assert_eq!(text.trim_end(), "直升机位置");
+        assert_eq!(end, 26);
+        assert_eq!(data.len(), original.len());
+        assert_eq!(&data[..2], &original[..2]);
+        assert_eq!(&data[end..], &original[end..]);
+        for translation in ["超过当前属性预留的长度上限", "不含\0空字符"] {
+            let mut rejected = original.clone();
+            assert!(
+                replace_fixed_fstring(&mut rejected, 2, "Helicopter Location", translation)
+                    .is_err()
+            );
+            assert_eq!(rejected, original);
+        }
+        let mut fallback = original.clone();
+        replace_fixed_fstring(
+            &mut fallback,
+            2,
+            "Helicopter Location",
+            "Helicopter Location",
+        )?;
+        assert_eq!(fallback, original);
+        Ok(())
+    }
+
     #[test]
     fn item_property_resizing_relocates_exports_and_preserves_gameplay_data() -> Result<()> {
         let mut header = vec![0; 52];
@@ -2049,12 +2555,12 @@ mod tests {
         let literals = [
             UiLiteral {
                 offset: name_at,
-                source: "MP5K",
+                source: "MP5K".into(),
                 layout: UiLiteralLayout::FString,
             },
             UiLiteral {
                 offset: hint_at,
-                source: "(LMB) to shoot",
+                source: "(LMB) to shoot".into(),
                 layout: UiLiteralLayout::FString,
             },
         ];
@@ -2104,24 +2610,23 @@ mod tests {
     }
 
     #[test]
-    fn embedded_ui_rows_are_allowed_but_unknown_assets_are_rejected() -> Result<()> {
-        let mut rows = Vec::new();
-        for asset in EMBEDDED_UI_ASSETS {
-            for literal in asset.literals {
-                rows.push(CsvRow {
-                    namespace: ASSET_TEXT_NAMESPACE.into(),
-                    key: asset_text_key(asset.path, literal.source, 0),
-                    hash: unreal_text_crc(literal.source),
-                    text: literal.source.into(),
-                    trans_text: "测试".into(),
-                    context_asset: asset.path.into(),
-                });
-            }
-        }
-        validate_rows(&rows, true)?;
-        rows[0].context_asset = "NuclearNightmare/Content/Unknown.uexp".into();
-        assert!(validate_rows(&rows, true).is_err());
-        Ok(())
+    fn embedded_ui_scope_excludes_unrelated_packages() {
+        assert!(embedded_scope(
+            "NuclearNightmare/Content/Graphics/Computer/NewTerminal.uexp"
+        ));
+        assert!(property_scope(
+            "NuclearNightmare/Content/Gameplay/Items/Item_NewTool.uexp"
+        ));
+        assert!(!property_scope(
+            "NuclearNightmare/Content/Gameplay/Items/Item_Ammo.uexp"
+        ));
+        assert!(!property_scope(
+            "NuclearNightmare/Content/Gameplay/Items/item_buckshot.uexp"
+        ));
+        assert!(!property_scope(
+            "NuclearNightmare/Content/Graphics/MainMenu/SettingsMenu.uexp"
+        ));
+        assert!(!embedded_scope("NuclearNightmare/Content/Unknown.uexp"));
     }
 
     #[test]
@@ -2139,8 +2644,8 @@ mod tests {
         let original = data.clone();
         let literal = UiLiteral {
             offset: 39,
-            source: " has powered on the ",
-            layout: UiLiteralLayout::ConcatAssignment { start: 0, end },
+            source: " has powered on the ".into(),
+            layout: UiLiteralLayout::StringAssignment { start: 0, end },
         };
         replace_ui_concat_literal(&mut data, &literal, " 已启动 ")?;
         let (text, tail) = read_script_string(&data, 39).unwrap();
@@ -2167,8 +2672,8 @@ mod tests {
         let end = data.len();
         let literal = UiLiteral {
             offset: 39,
-            source: "(Q) To Drop ",
-            layout: UiLiteralLayout::ConcatAssignment { start: 0, end },
+            source: "(Q) To Drop ".into(),
+            layout: UiLiteralLayout::StringAssignment { start: 0, end },
         };
         replace_ui_concat_literal(&mut data, &literal, "(Q)丢弃")?;
         let (text, tail) = read_script_string(&data, 39).unwrap();
