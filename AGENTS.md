@@ -62,7 +62,7 @@ cargo +nightly -Zscript .\scripts\nuclear_cn.rs decode --output .\origin.csv
 1. 从原始 `NuclearNightmare-Windows.pak` 单独提取英文 `Game.locres`。
 2. 自动发现并提取游戏的主菜单、建房、服务器列表、服装、背包、地图、任务、结算、技能树、按键设置、聊天、语音设置、载具 HUD 和教程弹窗等 UI `.uexp`，修正游戏更新后失效的文本哈希。
 3. 补入这些当前界面中存在、但旧 `locres` 没有的文本。支持带命名空间及可读键的 Base FText（如 `NNUIRemaster`），以及 Blueprint `EX_TextConst/LocalizedText` 中的运行时文本（如动态延迟提示）；以完整 `namespace/key` 区分记录。
-4. 扫描教程地图 Blueprint 中未进入 `Game.locres` 的内嵌文本，以特殊记录一并写入 CSV。
+4. 扫描教程地图 Blueprint 中未进入 `Game.locres` 的内嵌文本，并提取发电机通知、库存丢弃提示和 20 类可持有物品的名称/操作提示（21 份物品资源，含台球杆的另一份资源变体），以特殊记录一并写入 CSV。共 23 个 UI/物品资源、45 段文本的偏移及资源结构已按 V8.1.1 核实；原始 `.uexp` 或物品 `.uasset` 指纹变化时停止，须重新审查后更新规则。测试物品，以及仍含旧油桶默认文本的弹药资源暂不改写，避免按错误的默认描述生成弹药提示。
 5. 先从随项目提供的 `translations.csv` 匹配译文，再保留输出路径已有 CSV 中的非空译文。两者都要求 `namespace/key`、源文本哈希和原文匹配；原文变化的记录需要重新翻译。
 6. 生成带 UTF-8 BOM 的 `origin.csv`，可以直接用 Excel 或文本编辑器打开。
 
@@ -101,9 +101,10 @@ NuclearNightmare\Content\Paks\zz_NuclearNightmare_Chinese_P.pak
 2. 将普通 CSV 记录编译为 Unreal `Game.locres`。
 3. 只覆盖英文语言槽 `en`；俄文及其他语言槽保持游戏原版。
 4. 使用随项目提供的 `fonts/NNChinese-GB2312-Regular.ttf`（Sarasa Gothic SC 1.0.42 常用中文子集）生成 11 个中文字体覆盖。原游戏的 `NotoSansSC-Regular.ufont` 仅用作容器格式校验模板；其字体内容会替换为 Sarasa 子集。
-5. 根据 CSV 中的 `__ASSET_TEXT__` 记录，对教程地图内嵌文本进行等长汉化，保持 Blueprint 字节码偏移不变。
+5. 根据 CSV 中的 `__ASSET_TEXT__` 记录，以 Unicode 对教程地图内嵌文本进行等长汉化。奇数字节 ANSI 槽仅在已核实的独立 `SetStringPropertyByName` 字幕调用中转换：将参数结束标记提前一字节，随后补 `EX_Nothing`，保持后续 Blueprint 指令偏移不变；调用结构变化时停止打包，不再回退到 GBK。空白译文回退原文时保留原始字节。
+   发电机通知和库存丢弃提示的字符串拼接赋值也以 Unicode 重写，在完整赋值之后填充空操作，保留玩家名、地点名和物品名的动态拼接；动态地点名称本身不在此处改写。物品名称与提示位于类默认对象的 FString 属性中，可按 UTF-16 实际长度扩缩；同步更新配套 `.uasset` 中的导出长度、后续导出偏移和 `BulkDataStartOffset`。严格校验默认对象边界、连续导出、包尾标记和全部译文回读，并逐个比较其他导出以保证蓝图代码及其他数据不变。回退为英文的属性保留原始字节，不受中文字符串容量限制。
 6. 自动读取并保留原 PAK 的版本、mount point 和 path-hash seed，默认使用 Zlib 压缩生成最终 PAK；传入 `--no-compression` 可恢复无压缩打包。
-7. 将 `fonts/OFL.txt` 和 `fonts/NOTICE.txt` 一并打包到 `NuclearNightmare/Content/Localization/ThirdParty/SarasaGothic/`。在 Rust 进程内回读最终 PAK，校验其元数据及 15 个文件（1 个英文本地化文件、11 个字体覆盖、1 个教程地图补丁和 2 个字体许可/版权文件），并逐项解压，与打包前的文件比较完整内容。
+7. 将 `fonts/OFL.txt` 和 `fonts/NOTICE.txt` 一并打包到 `NuclearNightmare/Content/Localization/ThirdParty/SarasaGothic/`。在 Rust 进程内回读最终 PAK，校验其元数据及 59 个文件（1 个英文本地化文件、11 个字体覆盖、1 个教程地图补丁、23 个 UI/物品 `.uexp`、21 个物品 `.uasset` 和 2 个字体许可/版权文件），并逐项解压，与打包前的文件比较完整内容。
 
 `--strict` 会在任何 `trans_text` 留空时停止。省略该参数时，空白译文会自动回退到英文原文。
 
