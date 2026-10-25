@@ -1,0 +1,4 @@
+# Preserve embedded newlines in localization CSV fields.
+translations.csv -text
+review.csv -text
+*.ttf -filter -diff -merge -text
