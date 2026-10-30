@@ -105,7 +105,7 @@ Get-FileHash -LiteralPath ../NuclearNightmare/Content/Paks/zz_NuclearNightmare_C
 
 ## 6. 游戏验证
 
-1. 启动游戏，选择“选项 → 显示 → 语言 → English”，重启游戏。
+1. 启动游戏，选择“选项 → 显示 → 语言 → 简体中文”，重启游戏。
 2. 检查本次修改界面，抽查主菜单、设置、教程、任务日志、地图标签、物品和专长。
 3. 检查占位符、缺字、乱码、截断及排版。
 4. 记录游戏版本、Steam build、PAK SHA-256、已验证界面、未验证场景和截图。

@@ -140,7 +140,7 @@ NuclearNightmare\Content\Paks\zz_NuclearNightmare_Chinese_P.pak
 
 字体项目：[be5invis/Sarasa-Gothic](https://github.com/be5invis/Sarasa-Gothic)。随项目提供的子集约 3.90 MiB，保留当前翻译库字符、GB2312 常用中文和部分其他字符；完整来源、字符范围与哈希见 `fonts/NOTICE.txt`。新增译文时需检查字符覆盖，必要时重新生成子集。字体适用 OFL 1.1，不能改用代码的 AGPL 许可证；分发时保留 `fonts/OFL.txt` 和版权声明。
 
-严格校验只覆盖提取到的文本，不代表游戏全部文本均已汉化。画质选项中的 `Low`、`Very High` 等普通字符串会由设置逻辑直接赋值，不经过本地化表，目前仍保留英文。它们同时参与选项匹配，不能仅替换显示数组。启动页等其他未提取资源也需要另行排查；每次游戏更新后应重新提取、打包并进游戏验证。
+严格校验只覆盖提取到的文本，不代表游戏全部文本均已汉化。V8.1.3 已为画质、窗口模式和建房选项提供 `NNMenuOptions` 本地化键，启动提示也已加入本地化表，本补丁通过译文库覆盖这些文本。候选报告中仅供审查的设置脚本字符串仍可能参与选项匹配，不能仅替换显示数组。其他未提取资源仍需另行排查；每次游戏更新后应重新提取、打包并进游戏验证。
 
 生成器回归测试：
 
@@ -157,4 +157,4 @@ cargo +nightly test -Zscript --manifest-path scripts/nuclear_cn.rs --jobs 2
 
 原始游戏 PAK 使用 Oodle 压缩。Oodle 是专有压缩格式，因此 `repak` 会在进程内动态加载 `oo2core_9_win64.dll`：CLI 优先复用游戏目录中已有的运行库，缺失时由 `repak` 自动下载。该 DLL 是压缩算法运行库，不会启动外部工具进程；生成的汉化 PAK 默认使用 Zlib 压缩。
 
-安装 PAK 后，请在游戏的“选项 → 显示 → 语言”中选择 `English`，然后重启游戏。`Russian` 将继续使用游戏原版俄文文本。
+安装 PAK 后，请在游戏的“选项 → 显示 → 语言”中选择“简体中文”（原 `English` 槽），然后重启游戏。俄语将继续使用游戏原版俄文文本。
