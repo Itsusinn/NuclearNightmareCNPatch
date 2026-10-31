@@ -2,6 +2,7 @@
 ---
 [package]
 edition = "2024"
+version = "0.1.6"
 
 [dependencies]
 anyhow = "1"
@@ -29,6 +30,11 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 const ORIGINAL_PAK: &str = "NuclearNightmare/Content/Paks/NuclearNightmare-Windows.pak";
+const DEFAULT_PATCH_PAK: &str = concat!(
+    "NuclearNightmare/Content/Paks/zz_NuclearNightmare_Chinese_P_V8.1.4-v",
+    env!("CARGO_PKG_VERSION"),
+    ".pak"
+);
 const EN_LOCRES: &str = "NuclearNightmare/Content/Localization/Game/en/Game.locres";
 const FONT_TEMPLATE: &str =
     "NuclearNightmare/Content/Hyper/ResourcePack/Fonts/NotoSans/NotoSansSC-Regular.ufont";
@@ -100,11 +106,7 @@ struct EncodeArgs {
     #[arg(short, long, default_value = "origin.csv")]
     input: PathBuf,
     /// 输出 PAK
-    #[arg(
-        short,
-        long,
-        default_value = "NuclearNightmare/Content/Paks/zz_NuclearNightmare_Chinese_P.pak"
-    )]
+    #[arg(short, long, default_value = DEFAULT_PATCH_PAK)]
     output: PathBuf,
     /// 如有空白 trans_text 则报错；默认以原文回退
     #[arg(long)]

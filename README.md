@@ -2,7 +2,9 @@
 
 为 Nuclear Nightmare 提供简体中文翻译和中文字体，覆盖英文语言槽。部分游戏文本仍保留英文。
 
-当前补丁版本：**v0.1.5**，适配 **抢先体验版 V8.1.4 / Steam build 26341650**。
+当前补丁版本：**v0.1.6**，适配 **抢先体验版 V8.1.4 / Steam build 26341650**。
+
+本版调整补丁文件名，同时包含游戏版本和补丁版本；译文及补丁内容与 v0.1.5 一致。
 
 本次重新提取 1761 条文本，更新主菜单版本号与结算界面变更的文本键。全部译文已通过原文、占位符、字体覆盖与严格打包回读校验；生成器与审校工具共 31 项测试通过。已进游戏检查 V8.1.4 启动画面、主菜单、画面与显示设置、建房及世界设置；教程、任务日志、地图、物品、专长、加油及结算界面尚未完成本版本实测。部分游戏文本仍保留英文。
 
@@ -10,7 +12,7 @@
 
 仓库不跟踪 PAK 文件。补丁可从 [Releases](https://github.com/Itsusinn/NuclearNightmareCNPatch/releases) 下载，或按 [AGENTS.md](./AGENTS.md) 在本地生成。
 
-1. 退出游戏，将 `zz_NuclearNightmare_Chinese_P.pak` 放入游戏安装目录下的 `NuclearNightmare\Content\Paks\` 文件夹；更新补丁时替换同名文件。
+1. 退出游戏，将 `zz_NuclearNightmare_Chinese_P_V8.1.4-v0.1.6.pak` 放入游戏安装目录下的 `NuclearNightmare\Content\Paks\` 文件夹；更新补丁时先移除旧版本汉化 PAK（包括旧名 `zz_NuclearNightmare_Chinese_P.pak`），只保留一个版本。
 2. 启动游戏，在“选项 → 显示 → 语言”中选择“简体中文”（补丁覆盖原 `English` 语言槽，未安装时显示为 `English`）。
 3. 重启游戏，使汉化生效。
 
