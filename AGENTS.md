@@ -121,10 +121,10 @@ cargo +nightly -Zscript .\scripts\nuclear_cn.rs encode --input .\origin.csv --st
 默认输出：
 
 ```text
-NuclearNightmare\Content\Paks\zz_NuclearNightmare_Chinese_P_V8.1.4-v0.1.6.pak
+NuclearNightmare\Content\Paks\zz_NuclearNightmare_Chinese_V8.1.4-v0.1.6_P.pak
 ```
 
-默认文件名格式为 `zz_NuclearNightmare_Chinese_P_<游戏版本>-v<补丁版本>.pak`；游戏版本记录在 `scripts/nuclear_cn.rs` 的 `DEFAULT_PATCH_PAK` 中，补丁版本来自同文件的 `[package].version`。适配新游戏版本或发布新补丁时同步更新相应值及文档示例。`just encode` 与 `just encode-loose` 共用生成器的默认文件名，显式指定输出路径时使用指定名称。更新安装时先将旧版本汉化 PAK 移出游戏 PAK 目录，只保留一个版本。
+默认文件名格式为 `zz_NuclearNightmare_Chinese_<游戏版本>-v<补丁版本>_P.pak`；游戏版本记录在 `scripts/nuclear_cn.rs` 的 `DEFAULT_PATCH_PAK` 中，补丁版本来自同文件的 `[package].version`。必须保留末尾 `_P.pak`，以确保补丁优先覆盖原版资源。适配新游戏版本或发布新补丁时同步更新相应值及文档示例。`just encode` 与 `just encode-loose` 共用生成器的默认文件名，显式指定输出路径时使用指定名称。更新安装时先将旧版本汉化 PAK 移出游戏 PAK 目录，只保留一个版本。
 
 `encode` 会：
 

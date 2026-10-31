@@ -100,7 +100,7 @@ Get-FileHash -LiteralPath fonts/NNChinese-GB2312-Regular.ttf -Algorithm SHA256
 
 ```powershell
 just encode translations.csv
-Get-FileHash -LiteralPath ../NuclearNightmare/Content/Paks/zz_NuclearNightmare_Chinese_P_V8.1.4-v0.1.6.pak -Algorithm SHA256
+Get-FileHash -LiteralPath ../NuclearNightmare/Content/Paks/zz_NuclearNightmare_Chinese_V8.1.4-v0.1.6_P.pak -Algorithm SHA256
 ```
 
 ## 6. 游戏验证

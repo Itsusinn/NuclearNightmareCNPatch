@@ -31,9 +31,9 @@ use tempfile::TempDir;
 
 const ORIGINAL_PAK: &str = "NuclearNightmare/Content/Paks/NuclearNightmare-Windows.pak";
 const DEFAULT_PATCH_PAK: &str = concat!(
-    "NuclearNightmare/Content/Paks/zz_NuclearNightmare_Chinese_P_V8.1.4-v",
+    "NuclearNightmare/Content/Paks/zz_NuclearNightmare_Chinese_V8.1.4-v",
     env!("CARGO_PKG_VERSION"),
-    ".pak"
+    "_P.pak"
 );
 const EN_LOCRES: &str = "NuclearNightmare/Content/Localization/Game/en/Game.locres";
 const FONT_TEMPLATE: &str =
