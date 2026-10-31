@@ -2600,6 +2600,15 @@ mod tests {
     }
     use super::*;
 
+    #[test]
+    fn default_encode_filename_preserves_unreal_patch_priority() {
+        let Action::Encode(args) = Cli::try_parse_from(["nuclear-cn", "encode"]).unwrap().command
+        else {
+            panic!("expected encode arguments");
+        };
+        assert!(args.output.file_name().unwrap().to_str().unwrap().ends_with("_P.pak"));
+    }
+
     fn discovery_fixture() -> (PackageLayout, Vec<u8>) {
         let package = PackageLayout {
             names: vec!["ReturnValue".into()],
